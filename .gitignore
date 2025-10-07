@@ -36,4 +36,5 @@ design_*.pdb
 confidence_summary.csv
 media/
 se3_flow_matching.egg-info/
+metadata/
 
