@@ -10,7 +10,8 @@ from analysis import utils as au
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from motif_scaffolding import save_motif_segments
 from openfold.utils import rigid_utils as ru
-
+import torch
+from collections import OrderedDict
 
 class LengthDataset(torch.utils.data.Dataset):
     def __init__(self, samples_cfg):
@@ -175,18 +176,30 @@ def get_sampled_mask(contigs, length, rng=None, num_tries=1000000):
     return sampled_mask, sampled_mask_length, inpaint_chains
 
 
-def dataset_creation(dataset_class, cfg, task):
-    train_dataset = dataset_class(
-        dataset_cfg=cfg,
-        task=task,
-        is_training=True,
-    ) 
-    eval_dataset = dataset_class(
-        dataset_cfg=cfg,
-        task=task,
-        is_training=False,
-    ) 
-    return train_dataset, eval_dataset
+def dataset_creation(dataset_class, cfg, task,_is_predict=False):
+
+    if _is_predict:
+        eval_dataset = dataset_class(
+            dataset_cfg=cfg,
+            task=task,
+            is_training=False,
+            is_predict=True
+        )
+
+        return  eval_dataset
+
+    else:
+        train_dataset = dataset_class(
+            dataset_cfg=cfg,
+            task=task,
+            is_training=True,
+        )
+        eval_dataset = dataset_class(
+            dataset_cfg=cfg,
+            task=task,
+            is_training=False,
+        )
+        return train_dataset, eval_dataset
 
 
 def get_available_device(num_device):
@@ -285,3 +298,118 @@ def flatten_dict(raw_dict):
         else:
             flattened.append((k, v))
     return flattened
+
+def _load_submodule_from_ckpt(submodule: torch.nn.Module,
+                              ckpt_path: str,
+                              *,
+                              map_location="cpu",
+                              lightning_key="state_dict",  # Lightning .ckpt 里常见
+                              source_prefix=None,          # ckpt里参数的前缀，比如 "pred." / "model.pred." / "module.pred."
+                              target_prefix=""):           # 本地submodule的前缀，通常留空
+    """把 ckpt 中以 source_prefix 开头的参数，映射到 submodule 上（前缀替换为 target_prefix）。"""
+    ckpt = torch.load(ckpt_path, map_location=map_location)
+
+    state = ckpt
+    if isinstance(ckpt, dict) and lightning_key in ckpt and isinstance(ckpt[lightning_key], dict):
+        state = ckpt[lightning_key]  # 处理 Lightning 的 .ckpt
+
+    # 如果没给 source_prefix，自动猜一个（常见三种）
+    if source_prefix is None:
+        candidates = ["model.", "model.pred.", "module.pred.", ""]
+        hit = None
+        for cand in candidates:
+            for k in state.keys():
+                if k.startswith(cand):
+                    hit = cand
+                    break
+            if hit is not None:
+                break
+        source_prefix = hit if hit is not None else ""
+
+    # 过滤并改名前缀
+    new_state = OrderedDict()
+    sp = source_prefix
+    tp = target_prefix
+    for k, v in state.items():
+        if not k.startswith(sp):
+            continue
+        new_key = tp + k[len(sp):]  # 把 source_prefix 换成 target_prefix（通常 target_prefix=""）
+        new_state[new_key] = v
+
+    # 允许部分不匹配（严格匹配用 strict=True）
+    missing, unexpected = submodule.load_state_dict(new_state, strict=False)
+    print(f"[pred load] from {ckpt_path}\n"
+          f"  source_prefix='{sp}' → target_prefix='{tp}'\n"
+          f"  loaded={len(new_state)}  missing={missing}  unexpected={unexpected}")
+
+    return missing, unexpected
+
+
+def load_partial_state_dict(
+    model: torch.nn.Module,
+    ckpt_path: str,
+    *,
+    lightning_key: str | None = "state_dict",   # Lightning .ckpt
+    strip_prefixes = ("module.", "model."),     # 去掉这些前缀后再匹配
+    rename_rules: list[tuple[str,str]] = None,  # [(r"old\.encoder\.(\d+)\.", r"encoder.\1.")]
+    allow_slice: bool = False,                  # 仅当你确认有正确的子通道/子词表映射时才 True
+    map_location = "cpu",
+):
+    """把 ckpt 中能对上的参数加载进 model；其他跳过。
+       返回 (loaded_keys, skipped_shape_mismatch, skipped_missing_module) 方便你检查。"""
+    sd = torch.load(ckpt_path, map_location=map_location)
+    if lightning_key and isinstance(sd, dict) and lightning_key in sd:
+        sd = sd[lightning_key]
+
+    # 预处理：去前缀、应用重命名规则
+    def normalize_key(k):
+        for p in strip_prefixes:
+            if k.startswith(p):
+                k = k[len(p):]
+        if rename_rules:
+            for pat, repl in rename_rules:
+                k = re.sub(pat, repl, k)
+        return k
+
+    sd_norm = OrderedDict((normalize_key(k), v) for k, v in sd.items())
+
+    model_sd = model.state_dict()
+    to_load = OrderedDict()
+    skipped_shape = []
+    skipped_missing = []
+
+    for k, v in sd_norm.items():
+        if k not in model_sd:
+            skipped_missing.append(k)
+            continue
+        if v.shape == model_sd[k].shape:
+            to_load[k] = v
+        else:
+            if allow_slice:
+                # 安全切片到公共形状（仅在你确认语义一致时使用）
+                tgt = model_sd[k]
+                common = tuple(min(a, b) for a, b in zip(v.shape, tgt.shape))
+                if all(c > 0 for c in common):
+                    slices = tuple(slice(0, c) for c in common)
+                    vv = v[slices].clone()
+                    # 把裁剪后的小权重拷到目标前部，其他部分保持初始化
+                    new_param = tgt.clone()
+                    new_param[slices] = vv
+                    to_load[k] = new_param
+                else:
+                    skipped_shape.append((k, v.shape, model_sd[k].shape))
+            else:
+                skipped_shape.append((k, v.shape, model_sd[k].shape))
+
+    missing_after = [k for k in model_sd.keys() if k not in to_load]
+    unexpected = [k for k in sd_norm.keys() if k not in model_sd]
+
+    msg = (f"[partial load] from {ckpt_path}\n"
+           f"  matched={len(to_load)}  skipped_shape={len(skipped_shape)}  "
+           f"skipped_missing={len(skipped_missing)}  "
+           f"unexpected_in_ckpt={len(unexpected)}  "
+           f"missing_in_model={len(missing_after)}")
+    print(msg)
+
+    model.load_state_dict(to_load, strict=False)
+    return list(to_load.keys()), skipped_shape, skipped_missing

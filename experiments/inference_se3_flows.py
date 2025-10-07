@@ -50,7 +50,7 @@ class EvalRunner:
                 OmegaConf.save(config=self._cfg, f=f)
             log.info(f'Saving inference config to {config_path}')
 
-        # Read checkpoint and initialize module.
+        # Read checkpoints and initialize module.
         self._flow_module = FlowModule.load_from_checkpoint(
             checkpoint_path=ckpt_path,
             cfg=self._cfg,
@@ -100,7 +100,7 @@ class EvalRunner:
 @hydra.main(version_base=None, config_path="../configs", config_name="inference_unconditional")
 def run(cfg: DictConfig) -> None:
 
-    # Read model checkpoint.
+    # Read model checkpoints.
     log.info(f'Starting inference with {cfg.inference.num_gpus} GPUs')
     start_time = time.time()
     sampler = EvalRunner(cfg)

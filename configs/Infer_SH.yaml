@@ -1,0 +1,110 @@
+defaults:
+  - _self_
+  - datasets
+  - SH
+
+
+data:
+
+  # Available tasks: hallucination, inpainting
+  task: hallucination
+
+  # Available tasks: pdb, scope
+  dataset: val
+
+  loader:
+    num_workers: 12
+    prefetch_factor: 2
+
+  sampler:
+    # Setting for 48GB GPUs
+    max_batch_size: 1
+    max_num_res_squared: 160_000
+
+interpolant:
+  min_t: 1e-4
+
+  twisting:
+    use: False
+
+  rots:
+    corrupt: True
+    sample_schedule: exp
+    exp_rate: 10
+
+  trans:
+    corrupt: True
+    batch_ot: True
+    sample_schedule: linear
+    sample_temp: 1.0
+    vpsde_bmin: 0.1
+    vpsde_bmax: 20.0
+    potential: null
+    potential_t_scaling: False
+    rog:
+      weight: 10.0
+      cutoff: 5.0
+
+  sampling:
+    num_timesteps: 10
+    do_sde: False
+
+  self_condition: ${model.edge_features.self_condition}
+
+experiment:
+  task: shfbb_infer
+  noise_scheme: side_atoms
+  debug: True
+  seed: 123
+  num_devices: 1
+  ckpt_path: /home/junyu/project/protein-frame-flow-u/experiments/ckpt/se3-fm_sh/pdb__ENcoder11atoms_chroma_features_maskall_SNR_testnewppl_noiseinsacle8_notleak/2025-09-30_20-10-23/last.ckpt
+  warm_start_cfg_override: True
+  training:
+    trans_loss_weight: 1.0
+    rot_loss_weight: 0.5
+    rot_loss_t_threshold: 0.0
+    separate_rot_loss: True
+    trans_x0_threshold: 0.0
+    bb_atom_scale: 10
+    bb_atom_loss_weight: 1.0
+    bb_atom_loss_t_filter: 0.25
+    dist_mat_loss_weight: 1.0
+    dist_mat_loss_t_filter: 0.25
+    aux_loss_weight: 0.25
+    chil_loss_weight: 10
+    type_loss_weight: 0.02
+    atom_loss_weight: 0.02
+    SH_loss_weight: 10
+  wandb:
+    name: ${data.dataset}_seperated_Rm0_t0
+    project: se3-fm_sh
+#    id: 28ctsufs
+#    resume: 'must'
+    notes: >
+    
+
+
+
+  optimizer:
+    lr: 0.0001
+  trainer:
+    overfit_batches: 0
+    min_epochs: 1 # prevents early stopping
+    max_epochs: 50
+    accelerator: gpu
+    log_every_n_steps: 1
+    deterministic: False
+    strategy: auto
+    check_val_every_n_epoch: 2
+    accumulate_grad_batches: 2
+#    num_sanity_val_steps: 0
+
+
+  checkpointer:
+    dirpath: ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    save_last: True
+    save_top_k: 2
+    monitor: valid/local_mse_loss
+    mode: min
+  # Keep this null. Will be populated at runtime.
+  inference_dir: null

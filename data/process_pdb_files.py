@@ -23,6 +23,7 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     '--pdb_dir',
     help='Path to directory with PDB files.',
+    default='/home/junyu/project/casp15/targets/casp15.targets.TS-domains.public_12.20.2022/',
     type=str)
 parser.add_argument(
     '--num_processes',
@@ -33,7 +34,7 @@ parser.add_argument(
     '--write_dir',
     help='Path to write results to.',
     type=str,
-    default='preprocessed')
+    default='/home/junyu/project/casp15/targets/casp15.targets.TS-domains.public_12.20.2022/')
 parser.add_argument(
     '--debug',
     help='Turn on for debugging.',
@@ -194,6 +195,7 @@ def main(args):
         all_metadata = [x for x in all_metadata if x is not None]
     metadata_df = pd.DataFrame(all_metadata)
     metadata_df.to_csv(metadata_path, index=False)
+    print(metadata_path)
     succeeded = len(all_metadata)
     print(
         f'Finished processing {succeeded}/{total_num_paths} files')

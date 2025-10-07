@@ -204,7 +204,7 @@ def run():
     motif_segments_base_dir = "./motif_scaffolding//targets/"
     target_csv = "./motif_scaffolding//benchmark.csv"
 
-    # Read model checkpoint.
+    # Read model checkpoints.
     print('Starting inference')
     start_time = time.time()
     save_motifs(target_csv, motif_segments_base_dir)

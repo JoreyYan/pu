@@ -37,7 +37,7 @@ class ProteinData(LightningDataModule):
     def val_dataloader(self):
         return DataLoader(
             self._valid_dataset,
-            sampler=DistributedSampler(self._valid_dataset, shuffle=False),
+            sampler=None,
             num_workers=2,
             prefetch_factor=2,
             persistent_workers=True,
@@ -45,12 +45,18 @@ class ProteinData(LightningDataModule):
 
     def predict_dataloader(self):
         num_workers = self.loader_cfg.num_workers
-        return DataLoader(
-            self._predict_dataset,
-            sampler=DistributedSampler(self._predict_dataset, shuffle=False),
+        dl_kwargs = dict(
             num_workers=num_workers,
             prefetch_factor=None if num_workers == 0 else self.loader_cfg.prefetch_factor,
-            persistent_workers=True,
+            persistent_workers=True if num_workers > 0 else False,
+        )
+        if dist.is_available() and dist.is_initialized():
+            dl_kwargs['sampler'] = DistributedSampler(self._predict_dataset, shuffle=False)
+        else:
+            dl_kwargs['shuffle'] = False
+        return DataLoader(
+            self._predict_dataset,
+            **dl_kwargs,
         )
 
 
@@ -69,11 +75,11 @@ class LengthBatcher:
         super().__init__()
         self._log = logging.getLogger(__name__)
         if num_replicas is None:
-            self.num_replicas = dist.get_world_size()
+            self.num_replicas = 1
         else:
             self.num_replicas = num_replicas
         if rank is None:
-            self.rank = dist.get_rank()
+            self.rank = 0
         else:
             self.rank = rank
 
@@ -155,4 +161,4 @@ class LengthBatcher:
         return iter(self.sample_order)
 
     def __len__(self):
-        return len(self.sample_order)
+        return self._num_batches

@@ -5,13 +5,42 @@ import logging
 import tree
 import torch
 import random
-
+from data.all_atom import prot_to_torsion_angles,torsion_angles_to_frames,frames_to_atom14_pos
 from torch.utils.data import Dataset
 from data import utils as du
 from openfold.data import data_transforms
 from openfold.utils import rigid_utils
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
+
+from data.sh_density import sh_density_from_atom14_with_masks,sh_density_from_atom14_with_masks_e3nn
+from analysis.show_element_name_coords import gather_positions_by_name_for_element,plot_element_positions_by_name
+from openfold.np.residue_constants import rigid_group_atom_positions,residue_atoms
+from analysis.show_tensor_cdf import plot_tensor_distribution
+from analysis.show_atoms_distance import analyze_your_data
+
+
+
+
+
+from data.ele_atoms import build_elem_slot_maps,atom14_to_elem_slots,regroup_elem_to_atom14_fast
+
+def show_atoms(aatype, atom14_positions,atom14_element_idx,rigid_group_atom_positions):
+    # 选一个残基类型 & 元素
+    aa = "ARG"  # 你要看的氨基酸
+    elem = "N"  # 你要看的元素
+
+
+    name2pts = gather_positions_by_name_for_element(
+        target_aa_name=aa,
+        target_elem=elem,
+        aatype=aatype.unsqueeze(0),  # [B,N]
+        atom14_positions=atom14_positions.unsqueeze(0),  # [B,N,14,3]
+        atom14_element_idx=atom14_element_idx.unsqueeze(0),  # [B,N,14]
+        rigid_group_atom_positions=rigid_group_atom_positions
+    )
+
+    plot_element_positions_by_name(name2pts, title=f"{aa} — {elem} atoms grouped by name")
 
 
 def _rog_filter(df, quantile):
@@ -55,7 +84,7 @@ def _max_coil_filter(data_csv, max_coil_percent):
     return data_csv[data_csv.coil_percent <= max_coil_percent]
 
 
-def _process_csv_row(processed_file_path):
+def _process_csv_row(processed_file_path,map):
     processed_feats = du.read_pkl(processed_file_path)
     processed_feats = du.parse_chain_feats(processed_feats)
 
@@ -71,18 +100,100 @@ def _process_csv_row(processed_file_path):
     chain_feats = {
         'aatype': torch.tensor(processed_feats['aatype']).long(),
         'all_atom_positions': torch.tensor(processed_feats['atom_positions']).double(),
-        'all_atom_mask': torch.tensor(processed_feats['atom_mask']).double()
+        'all_atom_mask': torch.tensor(processed_feats['atom_mask']).double(),
+        # 'atom14_gt_exists': torch.tensor(processed_feats['atom14_gt_exists']).int(),
+        # 'atom14_gt_positions': torch.tensor(processed_feats['atom14_gt_positions']),
+        # 'atom14_alt_gt_positions': torch.tensor(processed_feats['atom14_alt_gt_positions']),
+        # 'atom14_alt_gt_exists': torch.tensor(processed_feats['atom14_alt_gt_exists']).int(),
+        # 'atom14_atom_is_ambiguous': torch.tensor(processed_feats['atom14_atom_is_ambiguous']).int(),
+        # 'atom14_element_idx': torch.tensor(processed_feats['atom14_element_idx']).int()
     }
     chain_feats = data_transforms.atom37_to_frames(chain_feats)
+    chain_feats = data_transforms.make_atom14_masks(chain_feats)
+    chain_feats = data_transforms.make_atom14_positions(chain_feats)
+    chain_feats = data_transforms.atom37_to_torsion_angles()(chain_feats)
+
+
+    #torsion_angles, torsion_alt_angles,torsion_mask=prot_to_torsion_angles(chain_feats['aatype'],chain_feats['all_atom_positions'],chain_feats['all_atom_mask'])
+
+    # ANGEL TO FRAMES
+    # identity=rigid_utils.Rigid.identity((1,torsion_angles.shape[0]))
+    # rigid=torsion_angles_to_frames(identity,torsion_angles.unsqueeze(0),chain_feats['aatype'].unsqueeze(0))
+    # atoms14s=frames_to_atom14_pos(rigid,chain_feats['aatype'].unsqueeze(0))
+
+
     rigids_1 = rigid_utils.Rigid.from_tensor_4x4(chain_feats['rigidgroups_gt_frames'])[:, 0]
     rotmats_1 = rigids_1.get_rots().get_rot_mats()
     trans_1 = rigids_1.get_trans()
+
+    identity=rigid_utils.Rotation.identity((1,chain_feats['aatype'].shape[0])).get_rot_mats().squeeze(0)
+
+    # R=rotmats_1
+    # det_R = torch.det(R)
+    # print(f"行列式: {det_R}")
+    # print(f"应该接近1，实际偏差: {abs(det_R - 1)}")
+    #
+    # # 检查正交性
+    # orthogonality_error = torch.norm(R @ R.transpose(-1, -2) - torch.eye(3, device=R.device))
+    # print(f"正交性误差: {orthogonality_error}")
+
+
+
+    aligned_frame=rigids_1[..., None].invert_apply(chain_feats['atom14_gt_positions'])*chain_feats['atom14_gt_exists'][...,None]
+   # analyze_your_data(aligned_frame.unsqueeze(0))
+
+    # from models.loss import backbone_mse_loss
+    # rmsd=backbone_mse_loss(aligned_frame.unsqueeze(0),atoms14s,chain_feats['atom14_gt_exists'].unsqueeze(0))
+
+
+    # density,density_mask,_,_,_=sh_density_from_atom14_with_masks(aligned_frame.unsqueeze(0),chain_feats['atom14_element_idx'].unsqueeze(0),chain_feats['atom14_gt_exists'].unsqueeze(0),L_max=8,r_max=8,per_atom_norm=False)
+    # density=density/torch.sqrt(torch.tensor(4*torch.pi))
+
+    density,density_mask,_,_,_=sh_density_from_atom14_with_masks(aligned_frame.unsqueeze(0),map['elem14'][chain_feats['aatype']].unsqueeze(0),chain_feats['atom14_gt_exists'].unsqueeze(0),L_max=8,r_max=8,per_atom_norm=False)
+    density=density/torch.sqrt(torch.tensor(4*torch.pi))
+
+    # xsum = torch.sum((density-density2)*density_mask)
+
+
+    # test two way of calculating element
+    # ele=map['elem14'][chain_feats['aatype']]
+    # x=torch.abs(ele-chain_feats['atom14_element_idx'])*(ele+1)
+    # xsum=torch.sum(x)
+
+
+    # test atoms to CX3
+    # atoms_eleslots,atoms_eleslots_mask=atom14_to_elem_slots(chain_feats['atom14_gt_positions'].unsqueeze(0),chain_feats['aatype'].unsqueeze(0),map,chain_feats['atom14_gt_exists'].unsqueeze(0))
+    # recover,_=regroup_elem_to_atom14_fast(atoms_eleslots,chain_feats['aatype'].unsqueeze(0),map)
+
+    # test rec from CX3 is right!
+    # from models.loss import backbone_mse_loss
+    # rmsd=backbone_mse_loss(chain_feats['atom14_gt_positions'].unsqueeze(0),recover,chain_feats['atom14_gt_exists'].unsqueeze(0))
+
+
+
+    # 先广播 mask
+    # expanded_mask = density_mask.expand_as(density)  # shape = [B, N, C, L+1, 2L+1, RBIN]
+    #
+    # # 取出 mask=1 的值
+    # masked_values = density[expanded_mask.bool()]  # shape = [num_selected]
+    #
+    #plot_tensor_distribution(density, name="density", bins=50)
+
+    # show_atoms(chain_feats['aatype'],aligned_frame,chain_feats['atom14_element_idx'],rigid_group_atom_positions)
+
+    backbone=torch.tensor(processed_feats['atom_positions'][:, [0, 1, 2, 4], :]).float()
+
+
     res_plddt = processed_feats['b_factors'][:, 1]
     res_mask = torch.tensor(processed_feats['bb_mask']).int()
 
     # Re-number residue indices for each chain such that it starts from 1.
     # Randomize chain indices.
     chain_idx = processed_feats['chain_index']
+
+    # rotmats_1, trans_1,_ = frams.inverse(backbone.unsqueeze(0), torch.tensor(chain_idx).unsqueeze(0))
+
+
     res_idx = processed_feats['residue_index']
     new_res_idx = np.zeros_like(res_idx)
     new_chain_idx = np.zeros_like(res_idx)
@@ -99,14 +210,32 @@ def _process_csv_row(processed_file_path):
         new_chain_idx = new_chain_idx + replacement_chain_id * chain_mask
     if torch.isnan(trans_1).any() or torch.isnan(rotmats_1).any():
         raise ValueError(f'Found NaNs in {processed_file_path}')
+
+
     return {
-        'res_plddt': res_plddt,
-        'aatype': chain_feats['aatype'],
-        'rotmats_1': rotmats_1,
-        'trans_1': trans_1,
+        'rotmats_0':identity.detach(),
+        'aatype': chain_feats['aatype']*res_mask,
+        'rotmats_1': rotmats_1.float(),
+        'trans_1': trans_1.float(),
         'res_mask': res_mask,
         'chain_idx': new_chain_idx,
         'res_idx': new_res_idx,
+        'backbone':  backbone.float(),
+        'normalize_density': density.squeeze(0).float(),
+        'density_mask': density_mask.squeeze(0).float(),
+        'torsion_angles':chain_feats['torsion_angles_sin_cos'].float(),
+        'torsion_alt_angles':chain_feats['alt_torsion_angles_sin_cos'].float(),
+        'torsion_mask':chain_feats['torsion_angles_mask'].float(),
+        'atom14_gt_exists': chain_feats['atom14_gt_exists'].float(),
+        'atom14_alt_gt_exists': chain_feats['atom14_alt_gt_exists'].float(),
+        'atom14_atom_is_ambiguous': chain_feats['atom14_atom_is_ambiguous'].float(),
+        # 'atom14_element_idx': chain_feats['atom14_element_idx'],
+        'atom14_gt_positions': chain_feats['atom14_gt_positions'].float(),
+        'atom14_alt_gt_positions': chain_feats['atom14_alt_gt_positions'].float(),
+        'atoms14_local':aligned_frame.float(),
+        'rigids_1':rigids_1.to_tensor_7().float(),
+        'sc_ca_t': torch.zeros_like(trans_1).float(),
+
     }
 
 
@@ -131,19 +260,27 @@ class BaseDataset(Dataset):
             *,
             dataset_cfg,
             is_training,
+
             task,
+            is_predict=False,
         ):
         self._log = logging.getLogger(__name__)
         self._is_training = is_training
+        self._is_predict = is_predict
         self._dataset_cfg = dataset_cfg
         self.task = task
         self.raw_csv = pd.read_csv(self.dataset_cfg.csv_path)
-        metadata_csv = self._filter_metadata(self.raw_csv)
+        if  self.dataset_cfg.do_not_filter:
+            metadata_csv = self.raw_csv
+        else:
+            metadata_csv = self._filter_metadata(self.raw_csv)
         metadata_csv = metadata_csv.sort_values(
             'modeled_seq_len', ascending=False)
         self._create_split(metadata_csv)
         self._cache = {}
         self._rng = np.random.default_rng(seed=self._dataset_cfg.seed)
+
+        self.map = build_elem_slot_maps()
 
     @property
     def is_training(self):
@@ -162,35 +299,50 @@ class BaseDataset(Dataset):
 
     def _create_split(self, data_csv):
         # Training or validation specific logic.
-        if self.is_training:
-            self.csv = data_csv
-            self._log.info(
-                f'Training: {len(self.csv)} examples')
-        else:
-            if self._dataset_cfg.max_eval_length is None:
-                eval_lengths = data_csv.modeled_seq_len
-            else:
-                eval_lengths = data_csv.modeled_seq_len[
+        if self._is_predict:
+
+            if self._dataset_cfg.max_eval_length is not None:
+                data_csv = data_csv[
                     data_csv.modeled_seq_len <= self._dataset_cfg.max_eval_length
                 ]
-            all_lengths = np.sort(eval_lengths.unique())
-            length_indices = (len(all_lengths) - 1) * np.linspace(
-                0.0, 1.0, self.dataset_cfg.num_eval_lengths)
-            length_indices = length_indices.astype(int)
-            eval_lengths = all_lengths[length_indices]
-            eval_csv = data_csv[data_csv.modeled_seq_len.isin(eval_lengths)]
-
-            # Fix a random seed to get the same split each time.
-            eval_csv = eval_csv.groupby('modeled_seq_len').sample(
-                self.dataset_cfg.samples_per_eval_length,
-                replace=True,
-                random_state=123
-            )
-            eval_csv = eval_csv.sort_values('modeled_seq_len', ascending=False)
-            self.csv = eval_csv
+            data_csv = data_csv.sort_values('modeled_seq_len', ascending=False)
+            self.csv = data_csv
             self._log.info(
-                f'Validation: {len(self.csv)} examples with lengths {eval_lengths}')
-        self.csv['index'] = list(range(len(self.csv)))
+                f'Validation: {len(self.csv)} examples with lengths {sorted(self.csv.modeled_seq_len.unique())}')
+            self.csv['index'] = list(range(len(self.csv)))
+
+        # Training or validation specific logic.
+        else:
+
+            if self.is_training:
+                self.csv = data_csv
+                self._log.info(
+                    f'Training: {len(self.csv)} examples')
+            else:
+                if self._dataset_cfg.max_eval_length is None:
+                    eval_lengths = data_csv.modeled_seq_len
+                else:
+                    eval_lengths = data_csv.modeled_seq_len[
+                        data_csv.modeled_seq_len <= self._dataset_cfg.max_eval_length
+                        ]
+                all_lengths = np.sort(eval_lengths.unique())
+                length_indices = (len(all_lengths) - 1) * np.linspace(
+                    0.0, 1.0, self.dataset_cfg.num_eval_lengths)
+                length_indices = length_indices.astype(int)
+                eval_lengths = all_lengths[length_indices]
+                eval_csv = data_csv[data_csv.modeled_seq_len.isin(eval_lengths)]
+
+                # Fix a random seed to get the same split each time.
+                eval_csv = eval_csv.groupby('modeled_seq_len').sample(
+                    self.dataset_cfg.samples_per_eval_length,
+                    replace=True,
+                    random_state=123
+                )
+                eval_csv = eval_csv.sort_values('modeled_seq_len', ascending=False)
+                self.csv = eval_csv
+                self._log.info(
+                    f'Validation: {len(self.csv)} examples with lengths {eval_lengths}')
+            self.csv['index'] = list(range(len(self.csv)))
 
     def process_csv_row(self, csv_row):
         path = csv_row['processed_path']
@@ -199,7 +351,7 @@ class BaseDataset(Dataset):
         use_cache = seq_len > self._dataset_cfg.cache_num_res
         if use_cache and path in self._cache:
             return self._cache[path]
-        processed_row = _process_csv_row(path)
+        processed_row = _process_csv_row(path,self.map)
         if use_cache:
             self._cache[path] = processed_row
         return processed_row
@@ -295,6 +447,15 @@ class BaseDataset(Dataset):
 
         # Storing the csv index is helpful for debugging.
         feats['csv_idx'] = torch.ones(1, dtype=torch.long) * row_idx
+
+        # Attach human-readable source name (kept as Python str; collate_fn will return list[str])
+        try:
+            if 'pdb_name' in csv_row:
+                feats['source_name'] = str(csv_row['pdb_name'])
+            elif 'name' in csv_row:
+                feats['source_name'] = str(csv_row['name'])
+        except Exception:
+            pass
         return feats
 
 
@@ -319,11 +480,13 @@ class PdbDataset(BaseDataset):
             dataset_cfg,
             is_training,
             task,
+            is_predict=False
         ):
         self._log = logging.getLogger(__name__)
         self._is_training = is_training
         self._dataset_cfg = dataset_cfg
         self.task = task
+        self._is_predict = is_predict
         self._cache = {}
         self._rng = np.random.default_rng(seed=self._dataset_cfg.seed)
 
@@ -336,6 +499,9 @@ class PdbDataset(BaseDataset):
         self._pdb_to_cluster = _read_clusters(self._dataset_cfg.cluster_path)
         self._max_cluster = max(self._pdb_to_cluster.values())
         self._missing_pdbs = 0
+
+        self.map = build_elem_slot_maps()
+
         def cluster_lookup(pdb):
             pdb = pdb.upper()
             if pdb not in self._pdb_to_cluster:

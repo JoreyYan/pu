@@ -27,5 +27,5 @@ model:
     no_qk_points: 8
     no_v_points: 12
     seq_tfmr_num_heads: 4
-    seq_tfmr_num_layers: 2
+    seq_tfmr_num_layers: 1
     num_blocks: 6

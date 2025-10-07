@@ -14,7 +14,7 @@ inference:
   task: null
   output_dir: inference_outputs/
 
-  # Choose checkpoint path
+  # Choose checkpoints path
   ckpt_path: null
 
   use_gpu: True
@@ -30,7 +30,7 @@ inference:
       corrupt: True
       sample_schedule: linear
     sampling:
-      num_timesteps: 100
+      num_timesteps: 10
     self_condition: True
 
     twisting:

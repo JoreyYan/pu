@@ -353,7 +353,7 @@ class ExtraMSABlock(nn.Module):
         _chunk_logits: Optional[int] = 1024,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         def add(m1, m2):
-            # The first operation in a checkpoint can't be in-place, but it's
+            # The first operation in a checkpoints can't be in-place, but it's
             # nice to have in-place addition during inference. Thus...
             if(torch.is_grad_enabled()):
                 m1 = m1 + m2
@@ -449,7 +449,7 @@ class EvoformerStack(nn.Module):
             pair_dropout:
                 Dropout used for pair activations
             blocks_per_ckpt:
-                Number of Evoformer blocks in each activation checkpoint
+                Number of Evoformer blocks in each activation checkpoints
             clear_cache_between_blocks:
                 Whether to clear CUDA's GPU memory cache between blocks of the
                 stack. Slows down each block but can reduce fragmentation

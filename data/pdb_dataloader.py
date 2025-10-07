@@ -17,12 +17,13 @@ from torch.utils.data.distributed import DistributedSampler, dist
 
 
 class PdbDataModule(LightningDataModule):
-    def __init__(self, data_cfg):
+    def __init__(self, data_cfg,):
         super().__init__()
         self.data_cfg = data_cfg
         self.loader_cfg = data_cfg.loader
         self.dataset_cfg = data_cfg.dataset
         self.sampler_cfg = data_cfg.sampler
+
 
     def setup(self, stage: str):
         self._train_dataset = PdbDataset(
@@ -47,7 +48,7 @@ class PdbDataModule(LightningDataModule):
             num_workers=num_workers,
             prefetch_factor=None if num_workers == 0 else self.loader_cfg.prefetch_factor,
             pin_memory=False,
-            persistent_workers=True if num_workers > 0 else False,
+            persistent_workers=False if num_workers > 0 else False,
         )
 
     def val_dataloader(self):
@@ -56,7 +57,7 @@ class PdbDataModule(LightningDataModule):
             sampler=DistributedSampler(self._valid_dataset, shuffle=False),
             num_workers=2,
             prefetch_factor=2,
-            persistent_workers=True,
+            persistent_workers=False,
         )
 
 

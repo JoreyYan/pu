@@ -271,7 +271,7 @@ class TemplatePairStack(nn.Module):
             dropout_rate:
                 Dropout rate used throughout the stack
             blocks_per_ckpt:
-                Number of blocks per activation checkpoint. None disables
+                Number of blocks per activation checkpoints. None disables
                 activation checkpointing
         """
         super(TemplatePairStack, self).__init__()

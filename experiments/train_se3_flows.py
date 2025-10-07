@@ -8,16 +8,53 @@ from pytorch_lightning import LightningDataModule, LightningModule, Trainer
 from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.strategies import DDPStrategy
 from data.datasets import ScopeDataset, PdbDataset
 from data.protein_dataloader import ProteinData
 from models.flow_module import FlowModule
 from experiments import utils as eu
 import wandb
 
+def is_rank0():
+    # 未初始化分布式时默认 True；已初始化时用 RANK/LOCAL_RANK
+    return int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0"))) == 0
+os.environ.setdefault("WANDB_START_METHOD", "thread")
 log = eu.get_pylogger(__name__)
 torch.set_float32_matmul_precision('high')
+import os
+os.environ["WANDB_MODE"] = "online"
 
+# 添加一个全局变量来存储seed
+GLOBAL_SEED = None
+def set_global_seed(seed=42):
+    """设置全局随机种子并将其存储在环境变量中"""
+    # 将种子存储在环境变量中
+    os.environ['GLOBAL_RANDOM_SEED'] = str(seed)
 
+    import random
+    import numpy as np
+    import torch
+
+    # Set Python's random seed
+    random.seed(seed)
+
+    # Set NumPy's random seed
+    np.random.seed(seed)
+
+    # Set PyTorch's random seed
+    torch.manual_seed(seed)
+
+    # Set CUDA's random seed if CUDA is available
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # For multi-GPU setups
+
+        # Additional settings for CUDA determinism
+        # Note: This may impact performance
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    print(f"Global random seed set to {GLOBAL_SEED}")
 class Experiment:
 
     def __init__(self, *, cfg: DictConfig):
@@ -50,11 +87,12 @@ class Experiment:
         if self._exp_cfg.debug:
             log.info("Debug mode.")
             logger = None
-            self._train_device_ids = [self._train_device_ids[0]]
+            # self._train_device_ids = [self._train_device_ids[0]]
             self._data_cfg.loader.num_workers = 0
         else:
             logger = WandbLogger(
                 **self._exp_cfg.wandb,
+                log_model=False
             )
             
             # Checkpoint directory.
@@ -74,15 +112,19 @@ class Experiment:
                 cfg_dict = OmegaConf.to_container(self._cfg, resolve=True)
                 flat_cfg = dict(eu.flatten_dict(cfg_dict))
                 if isinstance(logger.experiment.config, wandb.sdk.wandb_config.Config):
-                    logger.experiment.config.update(flat_cfg)
+                    logger.experiment.config.update(flat_cfg,allow_val_change=True)
+        
+
+
         trainer = Trainer(
             **self._exp_cfg.trainer,
             callbacks=callbacks,
             logger=logger,
+            # gradient_clip_val=0.5,  # 裁剪梯度范数为1，可调整
             use_distributed_sampler=False,
             enable_progress_bar=True,
             enable_model_summary=True,
-            devices=self._train_device_ids,
+            # devices=self._train_device_ids,
         )
         trainer.fit(
             model=self._module,
@@ -91,7 +133,7 @@ class Experiment:
         )
 
 
-@hydra.main(version_base=None, config_path="../configs", config_name="base.yaml")
+@hydra.main(version_base=None, config_path="../configs", config_name="Train_SH.yaml")
 def main(cfg: DictConfig):
 
     if cfg.experiment.warm_start is not None and cfg.experiment.warm_start_cfg_override:
@@ -112,4 +154,5 @@ def main(cfg: DictConfig):
     exp.train()
 
 if __name__ == "__main__":
+    set_global_seed(0)
     main()

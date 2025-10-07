@@ -77,7 +77,33 @@ def rot_matmul(
     )
 
     return torch.stack([row_1, row_2, row_3], dim=-2)
+def quaternion_to_euler_zyz_correct(q):
+    """
+    四元数转ZYZ欧拉角（正确版本）
+    """
+    w, x, y, z = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
 
+    # 归一化
+    norm = torch.sqrt(w * w + x * x + y * y + z * z)
+    w, x, y, z = w / norm, x / norm, y / norm, z / norm
+
+    # 正确的ZYZ转换公式
+    beta = torch.acos(torch.clamp(w * w + z * z - x * x - y * y, -1 + 1e-7, 1 - 1e-7))
+    sin_beta = torch.sin(beta)
+
+    # 避免除零
+    safe_sin_beta = torch.where(torch.abs(sin_beta) < 1e-6,
+                                torch.ones_like(sin_beta), sin_beta)
+
+    alpha = torch.atan2((x * z + w * y) / safe_sin_beta, (w * x - y * z) / safe_sin_beta)
+    gamma = torch.atan2((x * z - w * y) / safe_sin_beta, (w * x + y * z) / safe_sin_beta)
+
+    # 特殊情况处理
+    small_beta = torch.abs(sin_beta) < 1e-6
+    alpha = torch.where(small_beta, torch.atan2(2 * (w * y + x * z), w * w + x * x - y * y - z * z), alpha)
+    gamma = torch.where(small_beta, torch.zeros_like(gamma), gamma)
+
+    return alpha, beta, gamma
 
 def rot_vec_mul(
     r: torch.Tensor, 
@@ -105,7 +131,37 @@ def rot_vec_mul(
         dim=-1,
     )
 
-    
+
+def wigner_d_vec_mul(
+        d: torch.Tensor,
+        t: torch.Tensor
+) -> torch.Tensor:
+    """
+        Applies a Wigner D matrix (l=2, 5x5) to a vector. Written out by hand
+        to avoid transfer and avoid AMP downcasting.
+
+        Args:
+            d: [*, 5, 5] Wigner D matrices (l=2)
+            t: [*, 5] coefficient tensors (m=-2, -1, 0, 1, 2)
+        Returns:
+            [*, 5] rotated coefficients
+    """
+    t0 = t[..., 0]  # m = -2
+    t1 = t[..., 1]  # m = -1
+    t2 = t[..., 2]  # m = 0
+    t3 = t[..., 3]  # m = 1
+    t4 = t[..., 4]  # m = 2
+
+    return torch.stack(
+        [
+            d[..., 0, 0] * t0 + d[..., 0, 1] * t1 + d[..., 0, 2] * t2 + d[..., 0, 3] * t3 + d[..., 0, 4] * t4,
+            d[..., 1, 0] * t0 + d[..., 1, 1] * t1 + d[..., 1, 2] * t2 + d[..., 1, 3] * t3 + d[..., 1, 4] * t4,
+            d[..., 2, 0] * t0 + d[..., 2, 1] * t1 + d[..., 2, 2] * t2 + d[..., 2, 3] * t3 + d[..., 2, 4] * t4,
+            d[..., 3, 0] * t0 + d[..., 3, 1] * t1 + d[..., 3, 2] * t2 + d[..., 3, 3] * t3 + d[..., 3, 4] * t4,
+            d[..., 4, 0] * t0 + d[..., 4, 1] * t1 + d[..., 4, 2] * t2 + d[..., 4, 3] * t3 + d[..., 4, 4] * t4,
+        ],
+        dim=-1,
+    )
 def identity_rot_mats(
     batch_dims: Tuple[int], 
     dtype: Optional[torch.dtype] = None, 
@@ -666,6 +722,36 @@ class Rotation:
         rot_mats = self.get_rot_mats()
         return rot_vec_mul(rot_mats, pts)
 
+    def apply_wigner_d(self, t: torch.Tensor, l: int = 3) -> torch.Tensor:
+        """
+        Apply Wigner D matrix transformation to input vector using quaternion rotation.
+
+        This method:
+        1. Gets the quaternion representation of the rotation
+        2. Converts quaternion to ZYZ Euler angles
+        3. Computes Wigner D matrix using e3nn
+        4. Applies the transformation to input vector t
+
+        Args:
+            t: [*, 2l+1] input coefficients/vector (e.g., [*, 5] for l=2)
+            l: degree of spherical harmonics (default: 2 for d-orbitals)
+
+        Returns:
+            [*, 2l+1] transformed coefficients
+        """
+        # Get quaternion representation
+        quats = self.get_quats()
+
+        # Convert quaternion to ZYZ Euler angles
+        alpha, beta, gamma = quaternion_to_euler_zyz_correct(quats)
+
+        # Compute Wigner D matrix using e3nn
+        from e3nn import o3
+        d_matrix = o3.wigner_D(l, alpha, beta, gamma)  # [*, 2l+1, 2l+1]
+
+        # Apply Wigner D transformation
+        return wigner_d_vec_mul(d_matrix, t)
+
     def invert_apply(self, pts: torch.Tensor) -> torch.Tensor:
         """
             The inverse of the apply() method.
@@ -1134,6 +1220,33 @@ class Rigid:
         """
         rotated = self._rots.apply(pts) 
         return rotated + self._trans
+
+    def apply_rot(self,
+        pts: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+            Applies the transformation to a coordinate tensor.
+
+            Args:
+                pts: A [*, 3] coordinate tensor.
+            Returns:
+                The transformed points.
+        """
+        rotated = self._rots.apply(pts)
+        return rotated
+
+    def apply_wigner_d(self,pts: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+            Applies the transformation to a coordinate tensor.
+
+            Args:
+                pts: A [*, 3] coordinate tensor.
+            Returns:
+                The transformed points.
+        """
+        rotated = self._rots.apply_wigner_d(pts)
+        return rotated
 
     def invert_apply(self, 
         pts: torch.Tensor

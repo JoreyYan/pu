@@ -1,7 +1,7 @@
 defaults:
   - _self_
   - datasets
-  - model
+  - vae
 
 data:
 
@@ -9,19 +9,19 @@ data:
   task: hallucination
 
   # Available tasks: pdb, scope
-  dataset: pdb
+  dataset: scope
 
   loader:
-    num_workers: 4
-    prefetch_factor: 10
+    num_workers: 16
+    prefetch_factor: 16
 
   sampler:
     # Setting for 48GB GPUs
     max_batch_size: 80
-    max_num_res_squared: 400_000
+    max_num_res_squared: 160_000
 
 interpolant:
-  min_t: 1e-2
+  min_t: 1e-4
 
   twisting:
     use: False
@@ -30,6 +30,8 @@ interpolant:
     corrupt: True
     sample_schedule: exp
     exp_rate: 10
+  shs:
+    scale: 4.14
 
   trans:
     corrupt: True
@@ -51,37 +53,59 @@ interpolant:
   self_condition: ${model.edge_features.self_condition}
 
 experiment:
+  task: shdiffusion
   debug: False
   seed: 123
-  num_devices: 2
-  warm_start: null
+  num_devices: 1
+  warm_start:
   warm_start_cfg_override: True
   training:
     mask_plddt: True
     bb_atom_scale: 0.1
     trans_scale: 0.1
-    translation_loss_weight: 2.0
+    translation_loss_weight: 1.0
     t_normalize_clip: 0.9
-    rotation_loss_weights: 1.0
-    aux_loss_weight: 0.0
+    rotation_loss_weights: 1.
+    fape_loss_weights: 1.0
+    aux_loss_weight: 0.2
     aux_loss_use_bb_loss: True
     aux_loss_use_pair_loss: True
     aux_loss_t_pass: 0.5
+    vq_loss_weight: 0.01
   wandb:
-    name: ${data.task}_${data.dataset}
-    project: se3-fm
+    name: ${data.task}_${data.dataset}_vaeEMA_fapeloss_IPA
+    project: se3-fm2
+#    id: jl733t08
+#    resume: 'must'
+    notes: >
+      depth: [ 2, 2 ]
+      shorten_factor: [1,1]
+      downproj_factor: [1,1]
+      chroma_features
+      vq_loss_weight:0.01
+      standard init
+      AUXLOSS 0.2
+      chroma_cnn3_notshort
+      noclip
+      FAPELOSS loss weight 1
+      VAE 256DIM
+      self.trunk[f'ipa_{b}'] =rope3D.InvariantPointAttention(self._ipa_conf)
+
+
   optimizer:
     lr: 0.0001
   trainer:
     overfit_batches: 0
     min_epochs: 1 # prevents early stopping
     max_epochs: 1000
-    accelerator: gpu
+    accelerator: cpu
     log_every_n_steps: 1
     deterministic: False
-    strategy: ddp
-    check_val_every_n_epoch: 4
+    strategy: auto
+    check_val_every_n_epoch: 2
     accumulate_grad_batches: 2
+
+
   checkpointer:
     dirpath: ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
     save_last: True
