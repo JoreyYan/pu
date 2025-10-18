@@ -1,0 +1,746 @@
+{
+  "ODE_129_1step": [
+    {
+      "sample_id": "sample_T1104-D1_000034",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1104-D1_000034_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1104-D1_000034/predicted.pdb",
+      "pred_seq": "QLENSKVEAVAEGLKKIYADGVTKDNFKDYVKNNFAEEQISSVEEELNVLLSNSCTANEIEDKFRANISISAIVKAAKKKAWEKLATTVLRFAKALGLETDALIVAGKLALWAVECG"
+    },
+    {
+      "sample_id": "sample_T1106s1-D1_000043",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1106s1-D1_000043_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1106s1-D1_000043/predicted.pdb",
+      "pred_seq": "TAESKFSLWLRASPGYTFHGDHRAENYFRKLNTLESLLTTSKSSKLQAAAALLKSKKNNNRLLEIIILLLK"
+    },
+    {
+      "sample_id": "sample_T1106s2-D1_000037",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1106s2-D1_000037_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1106s2-D1_000037/predicted.pdb",
+      "pred_seq": "MIVLTERQQQRLLLLGWLELQSGHAERACILLDALNTLNPEHLAGRRCRLVADLMLNEGERAKKEAEWLISHDPDEAGLWLSLSRAKELDGNIIEARHAYEHYLKLEDHDE"
+    },
+    {
+      "sample_id": "sample_T1109-D1_000019",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1109-D1_000019_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1109-D1_000019/predicted.pdb",
+      "pred_seq": "TFPPFHIVIVLYPGVDLDDVAAPTELFSWLADAWQAFAVTIVLAAEHLVPIQTRDGDTLTPERQFADYADAAAPQPKVHILWVPGGAPDVIRELMRGGPYLDFIKAESAGADHVSSTSQGALILAAAGLLDGYRATTHWAFLPSLQQFPAIEVAEGRPFYVDDGNFIVGGGLSSGIAQALAIVARVAGEDLAEHVQDDTQYFPVLVPAVHSPLE"
+    },
+    {
+      "sample_id": "sample_T1119-D1_000044",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1119-D1_000044_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1119-D1_000044/predicted.pdb",
+      "pred_seq": "MEEARKLQEKIEWELAKLASKSEEERKELEDFVDAYVLVKMKLNAYRK"
+    },
+    {
+      "sample_id": "sample_T1120-D1_000033",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1120-D1_000033_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1120-D1_000033/predicted.pdb",
+      "pred_seq": "APLVLLFGSVRLPVSADGNIHAPTAQEELGLTESWEAAMVKHGLPETYRDFGAGPQAAVSVPDFVALAFALDTPQARRWQERARELLARADQGDVRVAAEIAERLPEPDARRWLAARD"
+    },
+    {
+      "sample_id": "sample_T1120-D2_000038",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1120-D2_000038_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1120-D2_000038/predicted.pdb",
+      "pred_seq": "ESTGARRKLLATAARHGGEGAVYGQIGSISMRTVLGEDSASVRQERGTEAVFDGLTSAQLDRLAYIDTVVAFAIEESQAAGDAAALVLHEKVARSERQSWERAGQVQFVG"
+    },
+    {
+      "sample_id": "sample_T1121-D1_000021",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1121-D1_000021_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1121-D1_000021/predicted.pdb",
+      "pred_seq": "KSPTDIGRDLAREWERSSVRLKFLLDPGCWPKSLLIGEPSASKAKSDIEAVLRHVELWRSVDVGEVLWKPVPISLPLFWHLRSPSEWIAASLDPRVSEEYAKLKYLVKQVDSAFHTLLVAQRSLWDTRTPEEVVATAQLATELAPGSAQGRPLRDLAKHGRATQFFQRLATLLTKLLDERFKGAASKKGLVVFLDA"
+    },
+    {
+      "sample_id": "sample_T1121-D2_000023",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1121-D2_000023_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1121-D2_000023/predicted.pdb",
+      "pred_seq": "RAASSHWVLVVPLEPGLLPFERLRLTTSELAQVPLPGSRLLVVQDEESVHLLPETLPDVLAVLGAGDDLHWLASAHLAGKEIGYWGDIDTWGLNNLARARLHQPAVQALLLEKELFEQHSEADESAPPGLDADEANFYRYLLVEQRGFLQQEYLPEAQVELAIRQWAR"
+    },
+    {
+      "sample_id": "sample_T1123-D1_000020",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1123-D1_000020_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1123-D1_000020/predicted.pdb",
+      "pred_seq": "SYPITPSSDVLLAGYFSGPKLGKYIPLIFKQDTSKVTFRSGSHVDKITSLVLVDRLDWLDEHFNQYTDEPDGVFGNVGNVRVDDNIVAEVLTMSGSSAPANRGATLLLCRATKDLETFNFAATVYLPAYKTVVLLVAEWKANKTLTYPAIPKDTYFMVTVLGGASFTLERYVVYDEGLGNGLELPARWGKYLSELYGRSWSSPTYASVTWEPDY"
+    },
+    {
+      "sample_id": "sample_T1124-D1_000006",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1124-D1_000006_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1124-D1_000006/predicted.pdb",
+      "pred_seq": "ATSIVDKSLLTGTTDEDRAVFSAHERYERLIGDWAPATLQAAHQLGVFAALAEAPADSGELARRLDCDARALRVLLDALYAYDVILRIHLTDGFRYNLSAEARESLLPGTLFSLVGKFDHNLDVAWPAWRDLAEVVRHGAADTSGAESPLGIAEEDYQCLPGGIDFWAPPLVTTLSRELRASGFSGDAVASVLDVGCGTGNYSKILLREFPRWTAVGLDTERIATIALAEADRDGVEERFATRAGDFWRGGWGTGYDLVLFADIFHLQTPASAVRLMRHAAASLAPDGLVAVVDELVDADREPETPEDFRALLFAASLVMVGGGDAYTREQYEEWFTAAGLERIKVLDTPDHRILLARRATQPSAVPEGEASELLYRQ"
+    },
+    {
+      "sample_id": "sample_T1133-D1_000004",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1133-D1_000004_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1133-D1_000004/predicted.pdb",
+      "pred_seq": "STPLLVVRGSAGLYMVLGPPHFVASTVFPAASGANSKVSDFSKDGTLFAWGNGKKVNILSVTNAGLLHSFDDLKAVSLKFSPKNTVLATWQPYTTGEPDLKLYDVATGTCLKSFLEQALENWCPSWSEDETLCARLVDNQVHFFEDLDFDTIADELHDEKLLDFVLSPGPQPYQVAVYVPGSEGAPSRVRLYKYPDFDGPHAALADKSFRQADKVTILWDTQATAVLVIASTSGNKVLHYLATDGESAVVQIPQDGPIYDVTWDSSSTKFCAVYGRLPAKAVLFDLSSNPVRNFGTGPFDAAYYSPHGHLLVLAGFGNLRGQLQVWDTQNYKLLSQPVASNSTYFAWSPDGQHLLVAVSAPANRTNNGYKLWHYTGSLLHEYNTPADAQIWKVSWQPRLNGIFPAKPIV"
+    },
+    {
+      "sample_id": "sample_T1137s1-D1_000028",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s1-D1_000028_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s1-D1_000028/predicted.pdb",
+      "pred_seq": "QLAGLILGLVGVLVLALVWLKFFGEFELKVELTVDSGFAGDSLDPGSEVTFNGVPIGRLASIMVVEVDNNPEARLTLLVDPKYLDLIPKNALVKLRATTVFGNKYISFDSPEDPSAERISASTPIRAKGVTTEFDTIFETITAISEQTDP"
+    },
+    {
+      "sample_id": "sample_T1137s1-D2_000013",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s1-D2_000013_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s1-D2_000013/predicted.pdb",
+      "pred_seq": "IELMETLTAAAEALLGNGLEFGFSIVLGLAILALVLPFLPQIFRLIVGLALLGKVYALASVILFIGLILAVVTARVLLKKFGDIIKALVAAVGFGLVGGLIFKRGGPYLVRGAKLLIPVSALLLKYSPALFCTIRLYHLAAPKLAGALGGIGYSMLVLSLVVGVGDPYVYPDNNPRVDAQGGPKGRPGCWEPITFLNWPRPYLVLNVGASLAPYNHRKLGEPIFAEYVWGFQVGKLTNLP"
+    },
+    {
+      "sample_id": "sample_T1137s2-D1_000029",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s2-D1_000029_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s2-D1_000029/predicted.pdb",
+      "pred_seq": "DSIEGTLFKLGIRSLVMMTRTALIRVVFGKIRFDRTVEYSAIFEDTSGIRDGERVFAAGVEVGEVESVLLIDGGKEAKVKFTVKRSLPLRKETTAAIRYEDLIGDRYLELEFGDSDEILPPGSTIPTERTEPALDLLALVGGFFPLFRS"
+    },
+    {
+      "sample_id": "sample_T1137s2-D2_000022",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s2-D2_000022_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s2-D2_000022/predicted.pdb",
+      "pred_seq": "NKPQKVLTIATSLITIFKGKGGVILLILLKTAELTASLAMFLEAIGKVIKMLMVVLLTTTRHKEQFLKTLVLFKTIITGLELFALPIATSVALISLAAGSLALIISLLRPLLKLTIGYLLVIEAPLVKKKEKVSNILVKLPKALQILGFAGGIYGNFRIFYACILTLKDMGIKPGGPVFVVRITTKPSGFCTPK"
+    },
+    {
+      "sample_id": "sample_T1137s3-D1_000030",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s3-D1_000030_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s3-D1_000030/predicted.pdb",
+      "pred_seq": "MFVLEGSNRFFKGILGVIVVALIIGVGSVLTSVPLLFATPVYYGKFADTGGLDIGDQVRLAGDIVGLVESIEIDGDEVVIGYTLGGRTIGTESRAAIRVDTLLGRKDIEIEPRGSEVLEPFGVLPTGKVSAPYKLYDARLLVVFLAAGW"
+    },
+    {
+      "sample_id": "sample_T1137s3-D2_000025",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s3-D2_000025_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s3-D2_000025/predicted.pdb",
+      "pred_seq": "DPQAVRKSLMVLSKTVLKVSPHLSAALLGVAFFSEVIGEFLELVKKLLASALKVATTLGLFSTQVIKLLVNAETLLAAVLEFGFSVSLLDKRVSSVSFKVQGFVLKLPDLLHVLEELFVVSLVLLKFKKLLALILVVAGKFITSLAEANASGPYFEVLIVDLIP"
+    },
+    {
+      "sample_id": "sample_T1137s4-D1_000035",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s4-D1_000035_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s4-D1_000035/predicted.pdb",
+      "pred_seq": "DPLVVVTAYFPKVDALYPGDEVLLNGVRVGSIDSIETAGDENKVVFHFLDQYQVPEDATASILDPSLTASRVLEISPPYTGGPTLRDGAVLDTDRTKVPDQYDKVFLEVTRLLALL"
+    },
+    {
+      "sample_id": "sample_T1137s4-D2_000015",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s4-D2_000015_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s4-D2_000015/predicted.pdb",
+      "pred_seq": "GPTPEQPEGPFGLIIESFADGFAGQGEKLLRVLRGLSIALTALLKGFGLFFAVVKSLALFVLALHRSIEKFVALLDNLAKFVNSFTLTDEEIAIALELLLRVLEVTFKFLLRLGGVLVHLIDLLKKVTTAILQPEPFLGLKVGLHAYPLIAALVLLIMSPLKGGIIGLPVLPGVVNFSDPMEFVCSSIEAGSRDGYEESAELCAEYLAPIIDAIERDYLPFGLIIASTALTDPEE"
+    },
+    {
+      "sample_id": "sample_T1137s4-D3_000041",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s4-D3_000041_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s4-D3_000041/predicted.pdb",
+      "pred_seq": "IAYSEERLQPPPGYELTTVPGIWSRDTDRSHGLHEPGWLVAPGNQGVKVEPATADLLTPESLAQLLGGPLLVPV"
+    },
+    {
+      "sample_id": "sample_T1137s5-D1_000032",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s5-D1_000032_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s5-D1_000032/predicted.pdb",
+      "pred_seq": "SGEWRGIADVPLPGGPGTESGSIVLYVKLPETLALDANSFVFVRNVRVGRVREIEIINWTPVLVVLVQPGIKIPKDVLAKIGETSLDGSKHVQLLPPENPSSEMLRNGDVIPLAQSSAYPTIERVLAGISGILTGGG"
+    },
+    {
+      "sample_id": "sample_T1137s5-D2_000017",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s5-D2_000017_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s5-D2_000017/predicted.pdb",
+      "pred_seq": "MPLIKVIKTEVRLILNGRADEIREFMLKLLTFVLELLEKREEIVRAILSTLFLLLIVSKRNDVLLRVMTKFPPIIKHFAKVRDLFAMAVTALGFLSAAALETLSGSLALLHTLLKMLKRPLKELGRAAPYLVGALKDILVVPFNIDDLPEAIRGDYILVSIELDLTLSSVLLAFLCGTGVSGLLRALEEAWGFDPATMIPDTRFVPNPHNAPGGPIVKRGE"
+    },
+    {
+      "sample_id": "sample_T1137s6-D1_000027",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s6-D1_000027_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s6-D1_000027/predicted.pdb",
+      "pred_seq": "LINTFRIQLKLVIRLVLTLVALVVLALFYLRLPTWAGLGLYQLLALLPDSGGLYATADVTYRGVTIGQVTSVKPSESGAFVEMLIYDRYKIPADATALVHSVSATGEKFIDLVSLSGGGAYFQPGDTITKATVPAQVGPALLAAEEGLATL"
+    },
+    {
+      "sample_id": "sample_T1137s6-D2_000012",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s6-D2_000012_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s6-D2_000012/predicted.pdb",
+      "pred_seq": "VQEQIGVLLMKAATAFGGLGPSLQFLVLSTEAIAGLFRALILPVLLIIKLSGPIIISKVLCGDALKRWAAMLLTLAAQSAQNLEALRSGLQKAAPTALQLLAVFSMVRESLPKTLALLKIVLDLLKRYLELVKEVLVALPQGAAVAEVGTLFAPEGLLHFGLGLDAVPPCLTGRLPASEWRSPADTRVKPLPSGIYCKIPKDAPDAVFGARLYPSALVPGKRAATPRECFSLEPYKPLGTLTWYGDPL"
+    },
+    {
+      "sample_id": "sample_T1137s7-D1_000008",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s7-D1_000008_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s7-D1_000008/predicted.pdb",
+      "pred_seq": "NGVEINVTGLSQSFGSSKLWEDVTLSIPAGEVSVIIGPSGTGKSVFMKSLIGLLRPERGSIVIDGVDLLKSSAEQLYELRTLFGVLRKDGALRGSLNIYDDTARPIREHTEESESEIREIVNEKLNLVGLPNLGHKRPGEISGGLRKRAGLARALVDNPKIILCDEPDSGLDPVFTAYLSQLLININAKLLATVLITTHDLNIARTTPDNLGLLFRKKLVDFGPREVLLTSEQPVVEEFLDGRRIGPIGLSEEELVPPQLEATPGMPEREAVARFKARTREIMHTLPPAAQAAIDKELNR"
+    },
+    {
+      "sample_id": "sample_T1137s8-D1_000011",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s8-D1_000011_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s8-D1_000011/predicted.pdb",
+      "pred_seq": "IEEPLATVGGFFKLSVLTGKALFTFPFEWEEFVLESWFMLRVAFLPVLAVSIPLTVLIIRVLNILDAKRGAADVSGAGAANGAVTQIGPLVTVLVVAGAGSTAISAILGAFTTRQQLDALKVLGIDPLKRLVVPFVVASTFVAFLLNGATIVIGLVGGFFFGVYIQNVSAGAYVSTLTLDTGFPEVLISVVQATLFGLIAGLVGSYRGLTVEGGSKGVGVAVLETLVLSVVAMFAVLVVLTVIGVFFGVGF"
+    },
+    {
+      "sample_id": "sample_T1137s9-D1_000010",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1137s9-D1_000010_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1137s9-D1_000010/predicted.pdb",
+      "pred_seq": "TAFFLLSLGHVAWFVVQALTHVPHAFRHYRRQSLRLVAEIGIGTGALAVIGGVVAIIGFVTLSAGSLIAIKGRASLGLIGVKAFTGFFAADALLRTTAPVVTGQALAATVGAGATAQLGALFISQQVDALQVLGIESLSYLVSTFILAGAITIIPLYALAILLSFLSAKLVTTIFYSESVGTYEHYFHTFLRVDDVLWCFLQVIILSVIVLLLHSYFGYFASGGAVGVGEAVGRSLFVSIIAIVLVVLLASNALYGTDPLFILPV"
+    },
+    {
+      "sample_id": "sample_T1139-D1_000009",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1139-D1_000009_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1139-D1_000009/predicted.pdb",
+      "pred_seq": "PSDVLRDAVQNGDYDTVKVALNSDKKYDLDQKLSSGNTLVMLAAAGGEDNLLHLLLSKGAKVDGREQNGVTALIHAAEQNRLPVVALLNKAGARVDTQESDGQTALMEASKRGNSDIVRLVIESGANSNLLSKHQLSALHRAKKSDNTNVYNLLKNHLETISRVAQETLEDYFKARLALDEPVFPLASHRLSEGPDFSTDFNYKPPEDLPEGSGILLFLFHADFDGEKVLARLSGPSSVEAVVINNEREDPVFDDSHRVYSFSPVAGTLKLRIRLTEAPSAKVKLLIGAYRVQLE"
+    },
+    {
+      "sample_id": "sample_T1145-D1_000040",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1145-D1_000040_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1145-D1_000040/predicted.pdb",
+      "pred_seq": "SGSKAYFDDSKYGWENVYVYAYGTEKLAEWPGKLLTKKDSGLYEASFASSFESEQIIFLDGLKKGLGEKKYPQAAGLSLKAGKSKMITAEKQWIDYGEP"
+    },
+    {
+      "sample_id": "sample_T1150-D1_000007",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1150-D1_000007_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1150-D1_000007/predicted.pdb",
+      "pred_seq": "RIERATRDYLEWLALYVTPVESLLQLQYQAIASSAFPRLRATFYRWNERWPQVCAQFADAPVTLGPGNLHVENFGVWRDAEGRLVWGLMDFDQAAHFPYVLDIIFLATSAILAIQENHLHLSADVACVAILEGYLESLAEGGRPYVLAEEHGWLRHLTTGELRDPEQFFHQLDALPEPEGPIPESAQTALEHLLPAEGLSYELKRRLAGLGSLGRPRYAAIAEWQGGLVVFEAKALLPSAADWAAGLQRAVKLYYQALLDRAVFSRNPFVRLEGHWLVRRLAPLCSRLELSQLPEERDEERLLHALGRQTADVHLGSPDSLALVLPHVQRLEASQLRSAADALVQAVLD"
+    },
+    {
+      "sample_id": "sample_T1157s1-D2_000036",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1157s1-D2_000036_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1157s1-D2_000036/predicted.pdb",
+      "pred_seq": "PHEVTLQFASLTKETLGGSAFDRNDSGEDDKRLSVIRDRVISDSGLEIVLELVQEGERKWRVTELNGIPLGRNEYVVIDRADLGDVSDPRFNLVRDRYYIKCSGVEVEDLIVDD"
+    },
+    {
+      "sample_id": "sample_T1157s1-D3_000016",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1157s1-D3_000016_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1157s1-D3_000016/predicted.pdb",
+      "pred_seq": "PVLAKLQQLHQTNLNNNTVTEKHPLNDLTSNSQVPLPAILSALLPLLSSFVQSLFAFNSLNVSVSPLPCSLLPDLVVNNEVAINTTGIGAAPLPPAASICPSGAPNPTFGPVPKSNFPWQTIYAAGQACAGPLPDSAPRQDQVLLLRFGGCSFSDQNALIPARVPSEQSLQLVVTTSLNQHQGQSGLVRPLNIQDQHTPGGNPFFHPLALVNVGGGETVYQQLSVASALGLER"
+    },
+    {
+      "sample_id": "sample_T1157s2-D1_000039",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1157s2-D1_000039_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1157s2-D1_000039/predicted.pdb",
+      "pred_seq": "SLVIKLEKDTFDDFIKSNDIVMAEFFAPWCGHSQALAPEYEKAATILKDKDLEMVEVDCTKETELCKEHGVKGYPTLKVFRGNDNVTPYKGEREAAAIVSYLIKES"
+    },
+    {
+      "sample_id": "sample_T1157s2-D2_000018",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1157s2-D2_000018_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1157s2-D2_000018/predicted.pdb",
+      "pred_seq": "NTAVSDVTKDTLEEFKKADKVVIVAYVLASDKASAKVFEKVAEKLRDDYPFGSSSDAELAEAQGVEAPAIVIYQNFDEGKAVFVEKFNEKAMKEWAQTAATPLIGKIGPETYGKYLAAGIPLAYIFAKTPEEREKLSKQLEPIAKATRGKILFGTIDAKAYGAHAGDLNMKTDKFPAFAIKETTENKKFPYDEDEEITHDSIEKFVNDYLAGKIEPS"
+    },
+    {
+      "sample_id": "sample_T1157s2-D3_000031",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1157s2-D3_000031_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1157s2-D3_000031/predicted.pdb",
+      "pred_seq": "IKSQPIPEEKEGPVTVVVAKTYDDIVLDDTKDVLIEFYAPWCGHCKALAPKYEELGRLYSLSEFKDRVVMAKIDATANDVPLDIDGFPTIKLYPAGAKDKPVTYSGNFSVEDLIEFTAKIGKYKALDSEIEKKDAVAASSS"
+    },
+    {
+      "sample_id": "sample_T1170-D1_000014",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1170-D1_000014_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1170-D1_000014/predicted.pdb",
+      "pred_seq": "VLFPQYFEEYIGKDKVKNELKIRLEAAKLRDEALDHVLLFGPPGLGKTTLARVIADELGVDLKETSGPAIKEAGDLVAILNMLKPGDILFIDEIHFLPDAVEEVLYSALEDYYLDIDIGAGKVSFSVHLILPPFTLVGATTFAGLLSDPLRARFGILGHLEYYQLPDLTKIVKRTSEIRKLVITPEAADKLARRSFGVPRIALRLLERVRDYAELNGDGVINDEIADKALTLLNVDHQGL"
+    },
+    {
+      "sample_id": "sample_T1170-D2_000042",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1170-D2_000042_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1170-D2_000042/predicted.pdb",
+      "pred_seq": "DYVIEKILRTLIEDYGGGPVGLGVLSVLLAEEFETVENLYEPYLIEEGFLIRTRTGFVATAEAYEHLGYDYT"
+    },
+    {
+      "sample_id": "sample_T1180-D1_000005",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1180-D1_000005_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1180-D1_000005/predicted.pdb",
+      "pred_seq": "ARPKLSVPITAPDRDGMIRETKKLAKLPVEMVEWRLDRFAGYGFEILIVLTELKRVMNEKKLIVTIRTVAEGGKELGSRFDYFETIRQLLEQQVADYVDVEAAFDKEEVKALCKEYSNSKTKVIGSYHDFSKVPSADEIEEFLCKAKESGCYAGELACLPKTFEDVMVMLDATAALKQKFPDFPLDVNCLGELGEVSFLYGGLYGSRVSFGSVSEASAPGEVYYETLSETRDKIYKGNRHLILLGFDGVGKSTISHELSRLASRNEIDVDEWMEEQQGRALSDIRAEEGEVYRRLLETSLIIELGNMEPAIISCGGGLALRELNVRKLKAIGTVVLLVAEPAAAELLEARRVYYEHAATVVVSVNGQDITEIAAKILAACR"
+    },
+    {
+      "sample_id": "sample_T1187-D1_000024",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1187-D1_000024_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1187-D1_000024/predicted.pdb",
+      "pred_seq": "AGKWIAARDLSIVWTNNPEYWVWKVVDPNLEVAELRRTKWLDLYGEIETKDLDRKTSYAVYLVFKLPDNPTELEFATASMRFTIEVAEGAGIEGTTVFISKAQEDPGEDGRFPHIRSNGWLEIKLGEFRIDDGEDGEVELFLMELNLKKWKSGLIVKGFDIRPI"
+    },
+    {
+      "sample_id": "sample_T1194-D1_000026",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_1step/sample_T1194-D1_000026_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_1step/sample_T1194-D1_000026/predicted.pdb",
+      "pred_seq": "GFVEVAGDACEWTPGRYELSEVEGRVRLPNGLYVEKKKTSELARGSCTFAMTLKAPAGKEIVVRDSKQLLSLFAYPEETRVKAKVKLFKAGSEGAEKTLEITAAEEAEEVTEYVGQKDVLLKTACGGSDILRGDLSATIIGKGEGRAFAEDVTLNIKEVDC"
+    }
+  ],
+  "ODE_129_10step": [
+    {
+      "sample_id": "sample_T1104-D1_000034",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1104-D1_000034_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1104-D1_000034/predicted.pdb",
+      "pred_seq": "ELENSKVEAVAKGLEEIYADGVTKDNFKDYVKNNFAEKEISSVEEQLNVIISLSCTANEIEDKFRANISISAIVKAAEEKAWKKLATTVLRFAEANGIQTNALIVAGKLALWAVQCG"
+    },
+    {
+      "sample_id": "sample_T1106s1-D1_000043",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1106s1-D1_000043_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1106s1-D1_000043/predicted.pdb",
+      "pred_seq": "TAESEFSNWLRASPGYTFHGMHRAKDYRFKLDTLESILTTSKSSELKAAAALLKSKKNLLRMIEIIIDNDH"
+    },
+    {
+      "sample_id": "sample_T1106s2-D1_000037",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1106s2-D1_000037_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1106s2-D1_000037/predicted.pdb",
+      "pred_seq": "DIVLTERQKKRLLMNGWDQLQSGHAERASILLDALNTLDPKHLAGRRCRLVAMLNKNEGKRAKEEAEWLISHNPNKAGNWLSLSRAKQLDGNIDEARHAYQHWLQLKDHNQ"
+    },
+    {
+      "sample_id": "sample_T1109-D1_000019",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1109-D1_000019_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1109-D1_000019/predicted.pdb",
+      "pred_seq": "TFPPFHIVIVMYPGVDLNDVAAPTKLFSWLANAYQARAVTIVLAAEHLTPIQTRNGDTLTPQRQFADYANAAAPKPKVHILRVPGGAPDVIRKNLRGGPYLNFIKAESAGADHVCSTSKGALMLAAAGLLDGYRATTHFAFIPSLKQFPALEVAQGRPFYVLDGNFIVGGGISSGLAQALAIVARVAGKDIAEHVKDITEYFPVLVPATHSPLE"
+    },
+    {
+      "sample_id": "sample_T1119-D1_000044",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1119-D1_000044_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1119-D1_000044/predicted.pdb",
+      "pred_seq": "MEKARELQKEIKWELAKLASKSEKERKQLEDRTDAYVLTKNKMNAAAA"
+    },
+    {
+      "sample_id": "sample_T1120-D1_000033",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1120-D1_000033_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1120-D1_000033/predicted.pdb",
+      "pred_seq": "APNTLMFGSVRLPVSADGDIHAPTAQKQLGLVESWEAAMVKHGLPKVYRDFGAGPQAAVSVPDFVALAFALDTPQARRWQERARELLARADKGDTRVAAKIAKRNPEPNARRYIAARM"
+    },
+    {
+      "sample_id": "sample_T1120-D2_000038",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1120-D2_000038_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1120-D2_000038/predicted.pdb",
+      "pred_seq": "KSTGARRKLLATAARHGGEGATYGEIGSISLRTVLGEISASVRKKRGTKAVFDGLTSAENDRMAWIDTVTAFAIEQSQAAGNAAANVLHKKVARSERESWEFAGKVKFVG"
+    },
+    {
+      "sample_id": "sample_T1121-D1_000021",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1121-D1_000021_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1121-D1_000021/predicted.pdb",
+      "pred_seq": "KSPVDIGRLLARQWKRSSVRLKFLLDPGCYPQSLDIGEPSAAAAAERIEAVLRHVKLWRSVDTGEVLYKPVVISLPLFWHIRSPSERIAACNDPRVSQEYAQLKYLVEQVNSAFHTLLVAKRSLWDTFTPKEVVATAQLATQLAPGSAQGRPMRDLAKHGAATQFFQRNATLLTKLLDQRFKGAASEKGLTTFLDA"
+    },
+    {
+      "sample_id": "sample_T1121-D2_000023",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1121-D2_000023_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1121-D2_000023/predicted.pdb",
+      "pred_seq": "FAASSHWVLVVPLEPGLLPFERLRLTTSELAEVPLPGSRLLVVKLEESVHLLPETLPDVLAVLGAGLDIHWLASAHLAGKEIGYWGDIDTWGMMNMARARLHEPAVEALLMEKKIFEEHSKADKSAPPGLLADQALFYRYLLVKERGRLEQQYLPEAEVELAIREWAR"
+    },
+    {
+      "sample_id": "sample_T1123-D1_000020",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1123-D1_000020_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1123-D1_000020/predicted.pdb",
+      "pred_seq": "SYPITPSSNVILAGYFSGPKLGEYNPLIYKQDTSKVTFRSGSHVLEIVSIVIVDRLDWLDKHFLKYTDKTMGVRGIVGNVRVDDIITAQVMTMSGSSAPANRGATIMMCRATQDMKTFDFAATVYIPAYKTVTLLVAQWKANKTLTYPALPKDTYFLVTTIGGASRTLERYTVYDEGIGNGLELPARWGKYLSELYGRSWSSPTYASVTYEPDY"
+    },
+    {
+      "sample_id": "sample_T1124-D1_000006",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1124-D1_000006_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1124-D1_000006/predicted.pdb",
+      "pred_seq": "ATSLVNKSMLTGTTLEDRAVFSAHQRYERLLGIWAPATLEAAHKMGVFAALAEAPANSGQLARRLNCNARAMRVMLDALYAYDTLLRMHLTNGRRYLLSAEARKSLLPGTLFSLVGQFDHMNNVAWPAWRDLAEVVRHGAADTSGAQSPMGIAEEDYESLTGGIDRWAPPLVTTLCRELRASGFSGDAVASVLDVGCGTGLYSKLLLREFPRWTAVGLDTERIATIALAEANFLGVQERFATRAGDFWRGGWGTGYDLVLFALIFHLETPASAVRLMRHAAASLAPNGLVAVVDQLTDANRKPETPEDFRALIFAASDVLVGGGDAYTFEEYEQWFTAAGLERIKVLDTPDHRMLLARRATKPSAVPQGKASQMMYRQ"
+    },
+    {
+      "sample_id": "sample_T1133-D1_000004",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1133-D1_000004_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1133-D1_000004/predicted.pdb",
+      "pred_seq": "STPLMTVRGSAGLYMVNGPPHFTASTTFPAASGANSKVSDFSKDGTLFAWGDGAKVNINSVTNAGDLHSFDALKAVSMKFSPKNTTLATWEPYVVGAPNLKLYNVATGTCLKSFLEKALENWSPSWSKDQTLCARLVDNQVHFFQNLNFDTIANEIHDEQMDDFVLSPGPKPYQTAVYVPGSAGAPSRVRLYKYPNFAGPHAALAKKSFRQADKVTILWDTQATAVLVLASTAGAKVLHYLATNGQSAVVQLPQMGPIYDVTWLSSSTKFCAVYGRLPAQATLFDLSSNPVFDFGTGVFNAAYYSPHGHILVLAGFGDMRGELQVWDTQLYKLLSKPTASDCTYFAWSPDGQHLLTAVCAPAMRTNNGYKLWHFTGSILHEYITPANAQLWEVSWEPRDDGMFTAEVLT"
+    },
+    {
+      "sample_id": "sample_T1137s1-D1_000028",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s1-D1_000028_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s1-D1_000028/predicted.pdb",
+      "pred_seq": "KLAGMILGLVGVLVNAMVWLQFFGEFQMKVQLTVNSGRAGNELDPGSEVTFDGVPIGRLASIIVVEVDNNPKARLTLNVDPKYLDLIPENADVKNRATTVFGNKFICFLSPQNPKAKRMSASTPIRAKGVTTEFLTLRKTITAISKKVDP"
+    },
+    {
+      "sample_id": "sample_T1137s1-D2_000013",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s1-D2_000013_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s1-D2_000013/predicted.pdb",
+      "pred_seq": "MQLMKTLTAAAQALLGDGLQFGFSIVLGLAILALVLPFLPEIFRLIVGLALLGKVYALASPLLFIGLILAVVVARVLNKEFGNIIKALVAAVGRGIVGGLIFQFGGPYLVRGAKMLIPVSAMLLKYSPALFCTIRLYHLAAPKLAGAIGGIGYSLLVNSLVVGVGLPYVYPDNLPRTLAQGGPKGRPGCWKPDTRMNWPRPWLVMDVGASLAPYLHRQDGKPIRAKYVWGFEVGKMTLDP"
+    },
+    {
+      "sample_id": "sample_T1137s2-D1_000029",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s2-D1_000029_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s2-D1_000029/predicted.pdb",
+      "pred_seq": "NSIEGTNFKLGIRSLVEDTFTAMIRVVFGKIRRLRTTEYSAIFKDTSGLRDGEFVFAAGVQVGKVKSVNLIDGGKQAKVEFTVERSMPLFKKTTAAIRYENLIGNRYLELERGNSDEILPPGSTIPTKRTKPAINLLAMVGGFFPLRRS"
+    },
+    {
+      "sample_id": "sample_T1137s2-D2_000022",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s2-D2_000022_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s2-D2_000022/predicted.pdb",
+      "pred_seq": "NKTQKVMTIAVSMITIFQGKGGVINLILLKVAKMTASMAMFMEALGKVIKMLMVVLDTTTFHEEKFLKVLVKFKTILTGLQLFADPIATSVALISLAAGSLAMIISLIRPLLQLTIGYLLVIEAPNVKQEKKVSLILVQLPKALEILGFAGGIYGMRRLFYACILTLKDNGLKPGGPVFTVRITTKPSGFCTPK"
+    },
+    {
+      "sample_id": "sample_T1137s3-D1_000030",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s3-D1_000030_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s3-D1_000030/predicted.pdb",
+      "pred_seq": "MRVMKGSMRFFKGLLGVIVVALIIGVGSVLTSVPLLFATPVYYGEFADTGGMDIGDQVRLAGNLVGLVESIEDIGNKVVIGYTNGGRTIGTQSRAAIRTLTNNGRKNIEIEPRGSKVLKPFGVLPTGQTSAPYELYMARMLVVFRAAGW"
+    },
+    {
+      "sample_id": "sample_T1137s3-D2_000025",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s3-D2_000025_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s3-D2_000025/predicted.pdb",
+      "pred_seq": "NPEAVRKSLLVLSEVVNQVSPHMSAAMIGVAFFSKVIGERLEMVKQLNASANKVAVTLGLRSVKVIELLVNAETLMAAVLKFGFSVSNMMKRVSSVSRKVKGFVDKMPDMLHVLKELFVVSLVMLKFKELLALILTTAGKFIVSLAEADASGPYFKVDIVLDLP"
+    },
+    {
+      "sample_id": "sample_T1137s4-D1_000035",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s4-D1_000035_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s4-D1_000035/predicted.pdb",
+      "pred_seq": "MPLTVVTAYFPEVNALYPGDEVMLNGVRVGSIDSIKTAGNKMKVVFHFLDKYKVPEDATASILDPSDTASRVLEISPPYTGGPTLRNGAVLDVDRTKVPDEFMKVFLEVTRLLADM"
+    },
+    {
+      "sample_id": "sample_T1137s4-D2_000015",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s4-D2_000015_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s4-D2_000015/predicted.pdb",
+      "pred_seq": "GPTPKEPEGPFGLIDKSFADGFAGQGKEILRVLFGLCIALVAMLKGFGMFFAVVQSLALFVMANHRSIEEFTAILDLMAKFVMSFVNTNEQIAIALELLMRVLQVTFKFLMRNGGVMTHLIDLLQKVVTAIIKPEPRLGIKVGLHAYPLLAAIVLLIMSPLKGGIIGMPVDPGVVMFSDPLKFVSSSIEAGSFDGYKKSAKLCAQYLAPIINAIERNYLPFGLIMASTALVDPEQ"
+    },
+    {
+      "sample_id": "sample_T1137s4-D3_000041",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s4-D3_000041_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s4-D3_000041/predicted.pdb",
+      "pred_seq": "IAYSEERNQPPPGYELTTVPGIRCRNTNRSHGNHEPGWLVAPGMKGVKVKPATANNMTPESLAQLNGGPLLVPV"
+    },
+    {
+      "sample_id": "sample_T1137s5-D1_000032",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s5-D1_000032_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s5-D1_000032/predicted.pdb",
+      "pred_seq": "SGKWRGIANVPNPGGPGTQSGSIVLWVQLPETNALDADSFVFVRNVRVGRVRKIEMINWTPVLVVLVEPGIEIPKDVLAKIGQTSLNGSQHVELLPPKNPSSEMLRNGDVIPDAQSSAYPTIERTLAGISGILTGGG"
+    },
+    {
+      "sample_id": "sample_T1137s5-D2_000017",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s5-D2_000017_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s5-D2_000017/predicted.pdb",
+      "pred_seq": "MPLIKVIKTEVRNILNGRADEIREFNLELLVFVMEMLKEREKIVRAILSTLRMNLIVSERLLVMIRVLTKFPPIIKHFAQVRDMFAMAVVALGFLSAAALKTLSGCLALLHTLNKLLEFPLKELGRAAPYLTGALKIILVVPFMIDDIPKAIRGNYMLTSLKMDLTICSVDMAFLCGTGVCGLMFALEQAWGRDPAVMLPNTRFTPNPHNAPGGPIVKRGE"
+    },
+    {
+      "sample_id": "sample_T1137s6-D1_000027",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s6-D1_000027_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s6-D1_000027/predicted.pdb",
+      "pred_seq": "NIDTFFIKLKLVIRMVLTLVAIVVLALFYLRLPTWAGMGLYELDALLPDSGGLYATADVTYRGTTIGQVTSVEPSESGAFVKLLIYDRYKLPADATALVHSVSAVGKKFLDLVSDSGGGAYFKPGDTITKAVVPAQVGPALLAAQKGLATM"
+    },
+    {
+      "sample_id": "sample_T1137s6-D2_000012",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s6-D2_000012_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s6-D2_000012/predicted.pdb",
+      "pred_seq": "VKKKIGVMLMEAATAFGGMGPSLKRLVLSTEAIAGMFRANILPVLLIIKMEGPIIISKVMCGDALEFWAAMNLTRAAESAKDLEADFSGMEKAAPTALQLNAVFSNVRESIPKTMALLKIVLLLLERYDKLVEKVLVAIPQGAAVAQTGTLFAPQGLNHFGMGMDAVPPCLVGRMPASEWRSPADVRTKPDPSGIFCKIPENAPDAVFGARLYPCALVPGERAATPFECRSLEPYKPLGTLTWYGDPL"
+    },
+    {
+      "sample_id": "sample_T1137s7-D1_000008",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s7-D1_000008_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s7-D1_000008/predicted.pdb",
+      "pred_seq": "NGVEIDVTGLSQSFGSSKNWENVTMSIPAGEVSVIIGPSGTGKSVFMESLIGLIRPERGSIVIDGVDMLKCSAEKLYQLRTMFGVLFQDGALRGSINLYDDVARPLREHTEESESEIREIVLEKLNLVGIPNDGHERPGQMSGGDRKRAGLARALVDNPQIILSNEPDSGLDPVRTAYNCKLLININAKLLATVLITTHDLDIARTTPDMLGMMFRKEMVMFGPREVLLTSKEPVVQEFLNGRRIGPIGDSEQQNVPPQLQATPGMPERKAVARFKARTRKILHTLPPAAKAAINKELNR"
+    },
+    {
+      "sample_id": "sample_T1137s8-D1_000011",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s8-D1_000011_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s8-D1_000011/predicted.pdb",
+      "pred_seq": "IKEPLATVGGFFKMKVMTGEALRTFPFEWEQFVLQSWFMLFVAFLPVLAVSIPLTVLIIFVIDILDAERGAANVSGAGAANGAVTQMGPLTTVIVVAGAGSTAISANLGARTTRKEIDALKVLGIDPMKRIVVPRVVASVFVARLLDGAVIVIGLVGGFFFGVYLENVSAGAYVSTLVMDTGFPEVLISVVKATLFGLIAGLVGSYRGLTVAGGSKGVGVAVLETLVNSVVALRAVNVVLTVIGTFFGTGF"
+    },
+    {
+      "sample_id": "sample_T1137s9-D1_000010",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1137s9-D1_000010_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1137s9-D1_000010/predicted.pdb",
+      "pred_seq": "TARFLLSLGHVAWFVVKAITHVPHARFHYFRESLRLVAEIGIGTGALAVIGGVVAIIGRVTIKAGCMIAIQGRASLGLIGVEAFTGRFAAMALLRTTAPVVVGKALAATVGAGATAQLGALRISKQVLALEVNGIESLSYLVSTFIMAGAIVIIPLFAMAILLSFLCAKLVTTLFYSESVGTYEHYFHTFLRVDDVIWSFLQVIILSVIVLLLHCYFGYFASGGAVGVGQAVGRSLFVSDIANVMVVLLASNALYGVNPLFDMPT"
+    },
+    {
+      "sample_id": "sample_T1139-D1_000009",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1139-D1_000009_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1139-D1_000009/predicted.pdb",
+      "pred_seq": "PCDVLRNAVKNGNYDTVKVALNSDKEYDLDKKDSSGDTLVMMAAAGGQNDMLINLISKGAKVDGRQENGVTALLHAAKKNRLTTTALLLKAGARVNTQQSNGETALMEACEFGNSDLVRMVIKSGANSNLLSKHQLSAMHRAQKCNNTNVYNMLKDHDETISRVAKETLENYFKARLAIDKPVFPLASHRLSEGPNFSTNFNYEPPENLPEGSGNLLFLFHANFDGKKTLARLSGPSSVEAVVINDKRQNPVFLNSHRVYSFSPVAGTMELRLFLTQAPSAKVELLIGAYRVKLE"
+    },
+    {
+      "sample_id": "sample_T1145-D1_000040",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1145-D1_000040_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1145-D1_000040/predicted.pdb",
+      "pred_seq": "SGSKAYFDDSKYGYKNVYVYAYGTEKLAEWPGKLLTKQDSGLYEASFASSFESQQILFLNGNKEGDGEKKYPQEEGMSMQAGQSKILTAEEKYLNYGKP"
+    },
+    {
+      "sample_id": "sample_T1150-D1_000007",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1150-D1_000007_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1150-D1_000007/predicted.pdb",
+      "pred_seq": "RDERATRDYLEWLALYVTPVQSLLEIKYKAMASSARPRIRATRYRFMERWPKVCAEFADAPTVLGTGDLHTENFGVWRNAEGRLVWGINNFNEAAHFPYVMDIIFLATSAILAIQENHLHLSADVACVAILKGYLKSLAEGGRPYVLAQKHGWLRHLTTGENRMPEKFFHKMLAMPQVKGPIPESAQVALKHILPAEGLSYQLKRRIAGLGSLGFPRWAAIAEYEGGMVVFEAEAILPSAANWAAGMKFAVKLYYKALLDRAVFSRDPFVRLEGHWLVRRLAPLCSRIKLSELPKERDEERLLHALGRQTANVHNGCPDCMANVLPHVQRLKASQLRSAADALVEATLM"
+    },
+    {
+      "sample_id": "sample_T1157s1-D2_000036",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1157s1-D2_000036_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1157s1-D2_000036/predicted.pdb",
+      "pred_seq": "PHEVVLERASLTKETNGGSAFDRNDCGKNMQRICVNRDRVISNSGLEIVLELVEKGERKRRVTKLNGIPLGRNQFVTILRADLGDVCDPRFNIVRDRFYIQCSGVEVEDLIVND"
+    },
+    {
+      "sample_id": "sample_T1157s1-D3_000016",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1157s1-D3_000016_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1157s1-D3_000016/predicted.pdb",
+      "pred_seq": "PVNAQLQELHETMLLNITTTQKHPMINLVSNSEVPNTAIDSAMLPNLSSFVKSLFARNSLNVSVCPNPSSNLPDNVVNNEVAIITTGNGAATLPPAASDCPSGAPNPTRGPVPESNFPWKTIYAAGEACAGPLPDSATRKNQVLLLRRGGCSFSDKNALIPAFTPSKKSLQLVTTTSNDQHQGESGLVRPLLLQDEHTPGGNPRRHPMANTDVGGGQTVYEELSVASALGMQR"
+    },
+    {
+      "sample_id": "sample_T1157s2-D1_000039",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1157s2-D1_000039_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1157s2-D1_000039/predicted.pdb",
+      "pred_seq": "SNTIELKKNTFDDFIKSMDIVMAEFRAPWCGHSKALAPEYEEAATILEDKDLQMVQVDCTKETKLCKEHGVQGYPTLQVFRGDNLVTPYKGERQAAAIVSYIIQQS"
+    },
+    {
+      "sample_id": "sample_T1157s2-D2_000018",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1157s2-D2_000018_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1157s2-D2_000018/predicted.pdb",
+      "pred_seq": "MVAVLDVTKDVMKEFKKADEVVIVAYVLASNKASAKVFEKTAKELRDNYPFGSSSNAELAKAEGVEAPALVIYKNFDEGKAVRVEKFNEKAIKEWAKTAATPNIGEIGPQTYGKYLAAGIPIAYIFAKTPKEREKLSKQLQPIAQATRGKILFGTLDAKAYGAHAGNLNMKTDKFPAFAIQETTENKKFPYNENEKITHDSLEKFTNNYNAGKIKPS"
+    },
+    {
+      "sample_id": "sample_T1157s2-D3_000031",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1157s2-D3_000031_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1157s2-D3_000031/predicted.pdb",
+      "pred_seq": "IKSEPIPEKEEGPVTVVVAKTYDNITLDDTKDVLIEFYAPHCGHCEALAPKYEELGFIYSLSEFKDRVVMAQIDATANDVPLNIMGFPTIKLYPAGAKDEPVTYSGLFSVKNLMEFTAKIGQYQALLSEIEKKDATAASSS"
+    },
+    {
+      "sample_id": "sample_T1170-D1_000014",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1170-D1_000014_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1170-D1_000014/predicted.pdb",
+      "pred_seq": "VLFPEYFEEYLGKDEVKNQLKIRMKAAKLRNKALDHTLLFGPPGLGKTTMARVIALELGVDMKETSGPAIKKAGILVAILNLLQPGDILFIDEIHRLPDAVQKVLYSALENYYLDLMIGAGQVSRSTHMILPPFTLVGATTRAGLLSNPLRARFGINGHLEYYEDPDLTEIVKRVSKIRKLVITPEAADKLARRSFGVPRIALRLLERVRDYAQLNGDGVINDKIADKALTILNVDHKGM"
+    },
+    {
+      "sample_id": "sample_T1170-D2_000042",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1170-D2_000042_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1170-D2_000042/predicted.pdb",
+      "pred_seq": "DYVNEKILRTLIELFGGGPVGLGVLSVLMAEKFQTVEDLWEPYLIEEGRLIRTRTGFVATAEAYKHLGYNYT"
+    },
+    {
+      "sample_id": "sample_T1180-D1_000005",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1180-D1_000005_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1180-D1_000005/predicted.pdb",
+      "pred_seq": "ARPKLSVPITAPDRDGMIRQTEKLAKMPVKMVEARMDFFAGYGFEMLIVITELKRVMDKQELIVTIRPVAEGGQEMGSRFDYFETIRKLLQEQVADYVNTEAARNKEEVEALCKEYSNSKTKVIGSYHDRSEVPSADEIQERMCEAKESGSYAGELACLPKTFKDVDVNLDAVAALKKKFPDFPLNVNSLGKLGEVCFLYGGLYGSRVSFGSTSEASAPGQVYYETLSEVRDKIYKGNRHLILLGRDGTGKSKISHELSRNAKFDEIDVDEWMEKQQGRALSDIRAEKGEVYRRLLETSLIIQLGDLEPAIISCGGGLALRQINVFKMQAIGTVVLLVAKPAAAELNEARFTYYEHAATVVVSVIGQNLTEIAAKILAACR"
+    },
+    {
+      "sample_id": "sample_T1187-D1_000024",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1187-D1_000024_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1187-D1_000024/predicted.pdb",
+      "pred_seq": "AGKWIAARNLKITWKKLPEYWVWKVVNPNDQVAELRRTAWLNIYGEIETKDLDRQTSYAVYLVFKLTDNPTEIEFATASMRFTNEVAKGAGDQGTTVFISKAQKLPGQDGRFPHLRSDGWKQLKLGEFFINNGELGQVQMRIMENNLKKWKSGLIVKGFLMRPI"
+    },
+    {
+      "sample_id": "sample_T1194-D1_000026",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_10step/sample_T1194-D1_000026_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_10step/sample_T1194-D1_000026/predicted.pdb",
+      "pred_seq": "GFTEVAGDACQWTPGRYQLSQVEGRVRLPNGLYVEKEKTSKIARGSCTFALVLKAPAGKEIVVRDSKQLLSMRAYPQETRVKAKVKLFKAGSEGAEKTLEITAAEEAKQVTQYVGEKDVLLKTACGGSNILRGNMSAVIIGQGKGRARAEDVTLDIKEVDC"
+    }
+  ],
+  "ODE_129_100step": [
+    {
+      "sample_id": "sample_T1104-D1_000034",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1104-D1_000034_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1104-D1_000034/predicted.pdb",
+      "pred_seq": "ELEDSKVEAVAKGLEEIYADGVTKDNFKDYVKDNFAEKEISSVEQQLNVIISLSCTANEIQNKFRANISISAIVKAAEEKAYKKLATTVLRFAEANGIQTNALIVAGKLALWAVECG"
+    },
+    {
+      "sample_id": "sample_T1106s1-D1_000043",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1106s1-D1_000043_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1106s1-D1_000043/predicted.pdb",
+      "pred_seq": "TAESEFSNWLRASPGYTFHGMHRAKDYFFKMNTLESILTTSKSSELKAAAALLKSKKDLLRMIEIIINNIH"
+    },
+    {
+      "sample_id": "sample_T1106s2-D1_000037",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1106s2-D1_000037_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1106s2-D1_000037/predicted.pdb",
+      "pred_seq": "DNVLTERQKKRLLMLGYDELQSGHAERASILLDALNTLDPKHMAGRRCRLVAMLNMNEGKRAKEQAEWLISHNPNKAGNWLSLSRAKQLDGNIDEARHAYQHWLQLKDHNQ"
+    },
+    {
+      "sample_id": "sample_T1109-D1_000019",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1109-D1_000019_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1109-D1_000019/predicted.pdb",
+      "pred_seq": "TFPPFHITIVMYPGVDLNDVAAPTKLFSWLANAYQARAVTMVLAAEHLTPIQTFNGDTLTPQRQFADYANAAAPKPKVHILRVPGGAPDVIRKNLRGGPYLNFIKAESAGADHVCCTSKGALMLAAAGLLDGYRATTHFAFIPSIKQFPALEVAEGRPFYVLDGNFIVGGGISSGLAQALAIVARVAGKDIAEHVKDITEYFPVLVPATHSPLE"
+    },
+    {
+      "sample_id": "sample_T1119-D1_000044",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1119-D1_000044_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1119-D1_000044/predicted.pdb",
+      "pred_seq": "MKKARELQKKIKWELAKLASKSEKERKQLEDFTDAYVLTKNKMDAAAA"
+    },
+    {
+      "sample_id": "sample_T1120-D1_000033",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1120-D1_000033_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1120-D1_000033/predicted.pdb",
+      "pred_seq": "APNTLMFGSVRLPVSANGDIHAPTAQKQLGLVESWEAAMVKHGLPKVYRDFGAGPQAAVSVPDFVALAFAMDTPQARRWQERARELLARADKGDTRVAAKIAKRNPQPNARRYIAARM"
+    },
+    {
+      "sample_id": "sample_T1120-D2_000038",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1120-D2_000038_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1120-D2_000038/predicted.pdb",
+      "pred_seq": "KSVGARRKLLATAARHGGEGATYGEIGSISLRTVLGEISASVRKKRGTKAVFDGLTSAENDRMAWIDTVTAFAIEQSQAAGDAAANVLHKKVARSERQSWEFAGKVKFVG"
+    },
+    {
+      "sample_id": "sample_T1121-D1_000021",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1121-D1_000021_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1121-D1_000021/predicted.pdb",
+      "pred_seq": "KSPVDIGRLLARQWKRSSVRLKFLLDPGCYPQSLMIGEPSAEAAAENIEAVLRHVKLWRSVDTGEVLYKPVVISLPLFWHIRSPSERIAACNDPRVSQEYAQLKYLVEKVLSAFHTDLVAERSLYDTFTPKQVVATAELATQLAPGSAQGRPMRDLAKHGAATQFFERNATLLTKLLDQRFKGAASEKGLTTFLDA"
+    },
+    {
+      "sample_id": "sample_T1121-D2_000023",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1121-D2_000023_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1121-D2_000023/predicted.pdb",
+      "pred_seq": "FAASSHWVLVVPLEPGLLPFERLRLTTSELAQVPLPGSRLLVVKLEESVHLLPKTLPDVLAVLGAGLNIHWLASAHLAGKKIGYWGDIDTWGMMNMARARLHEPAVEALLMQKKIFEEHSKANKSAPPGLLADQALFYRYLLVKQRGRLEQQYLPEAEVKLAIREWAR"
+    },
+    {
+      "sample_id": "sample_T1123-D1_000020",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1123-D1_000020_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1123-D1_000020/predicted.pdb",
+      "pred_seq": "SYPITPSSDVILAGYFSGPKLGEYNPLIYKQDTSKVTFRSGSHVLEIVSIVIVDRLDWLDKHFNKYTDKTLGVRGIVGNVRVDDIITAQVMTMSGSSAPANRGATIMMCRATQDMKTFDFAATVYIPAYKTVTLLVAEWKANKTLTYPALPKDTYFLVTTIGGASRTLERYTVYDEGIGNGLELPARWGKYLSELYGRSWSSPTYASVTYEPDY"
+    },
+    {
+      "sample_id": "sample_T1124-D1_000006",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1124-D1_000006_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1124-D1_000006/predicted.pdb",
+      "pred_seq": "ATSLVNKSMLTGTTLEDRAVFSAHQRYERLLGIWAPATLQAAHKIGVFAALAEAPANSGQLARRLNCNARAMRVMLDALYAYNTLLRMHLTDGRRYLLSAEARKSLLPGTLFSLVGQFDHMDNVAWPAWRNLAEVVRHGAADTSGAQSPMGIAEEDYESLTGGIDRWAPPLVTTLCRELRASGFSGDAVASVLDVGCGTGLYSKLLLREFPRWTAVGLDTERIATIALAEANRLGVQQRFATRAGDFWRGGWGTGYDLVLFANIFHLETPASAVRLMRHAAASLAPNGLVAVVDQLTDANRKPETPEDFRALIFAASDVLVGGGDAYTFEQYEEWFTAAGLERIKVLDTPDHRMLLARRATKPSAVPEGKASQMMYRE"
+    },
+    {
+      "sample_id": "sample_T1133-D1_000004",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1133-D1_000004_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1133-D1_000004/predicted.pdb",
+      "pred_seq": "STPLMTVRGSAGLYMVNGPPHFTASTTFPAASGANSKVSNFSKNGTLFAWGDGAKVNINSVTNAGDLHSFDALKAVSMKFSPKNTTLATWEPYVVGAPNLKLYDVATGTCLKSFLEKALENWSPSWSKDQTLCARLVDNQVHFFQNLNFDTIANEIHDEQMNNFVLSPGPKPYQTAVYVPGSAGAPSRVRLYKYPNFAGPHAALAMKSFRQADKVTILWDVQATAVLVLASTAGAKVLHYLATNGQSAVVQLPQMGPIYDVVWLSSSTKFCAVYGRMPAQATLFDLSSNPVFDFGTGVFDAAYYSPHGHILVLAGFGDMRGQLQVWDTQLYKLLSKPTASDCTYFAWSPDGQHLLTAVCAPAMRTNNGFKLWHFTGSILHEYITPANAQLWEVSWEPRDDGMFVAKVLT"
+    },
+    {
+      "sample_id": "sample_T1137s1-D1_000028",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s1-D1_000028_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s1-D1_000028/predicted.pdb",
+      "pred_seq": "ELAGMILGLVGVLVNAMVWLQFFGEFQMKVELTVNSGRAGNCLIPGSEVTFDGVPIGRLASIIVVEVDDNPQARLVLDVDPKYLNLIPENANVKNRATTVFGNKYICFLSPQNPCAKRMSASTPIRAKGVTTQFLTLRKTITAISKKVDP"
+    },
+    {
+      "sample_id": "sample_T1137s1-D2_000013",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s1-D2_000013_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s1-D2_000013/predicted.pdb",
+      "pred_seq": "MQLMKTLTAAAEALLGDGLQFGFSIVLGLAILALVLPFLPEIFRLIVGLALLGKVYALASPLLFIGLILAVVVARVLDKEFGNIIKALVAAVGRGIVGGLIFQFGGPYLVRGAKMLIPVSAMLLKYSPALFCTIRLYHLAAPKLAGAIGGIGYSLLVNSLVVGVGLPYVYPDNLPRTLAQGGPKGRPGCWKPDTRMNWPRPWLVMDVGASLAPYLHRQDGKPIRAKYVWGFEVGKMTLDP"
+    },
+    {
+      "sample_id": "sample_T1137s2-D1_000029",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s2-D1_000029_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s2-D1_000029/predicted.pdb",
+      "pred_seq": "NSIQGVDFKLGIRSLVMDTFTAMIRVVFGKIRRLRTTEYSAIFKNTSGLRNGEFVFAAGVQVGKVKSVNLIDGGKEAKVEFTVERSMPLFKKTTAALRYEDLIGNRYLELERGNSDEILPPGSTIPTKRTKPAINLLAMVGGFFPLRRS"
+    },
+    {
+      "sample_id": "sample_T1137s2-D2_000022",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s2-D2_000022_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s2-D2_000022/predicted.pdb",
+      "pred_seq": "DKTQEVMTIAVSMITIFQGKGGVINLILLKVAKMTASMAMFMQALGEVIKMLMVVLDTTTFHEEKFLKVLVMFKTILTGLQLFAEPIATSVALISLAAGSLAMIISLIRPLLQLTIGYLLVIEAPMVKQEKKVSLILVQLPKALEILGFAGGIYGMRRLFYACILTLKDNGLKPGGPVFTVRITTQPSGFCTPK"
+    },
+    {
+      "sample_id": "sample_T1137s3-D1_000030",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s3-D1_000030_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s3-D1_000030/predicted.pdb",
+      "pred_seq": "MRVMKGSMRFFKGLLGVIVTALIIGVGSVLTSVPLLFATPVYYGEFADTGGMDIGDKVRLAGNLVGLVESIEDIGNKVVIGYTNGGRTIGTQSRAAIRTLTNNGRKNIEIEPRGSKVLKPFGVLPTGQTSAPYELYMARMLVVFRAAGW"
+    },
+    {
+      "sample_id": "sample_T1137s3-D2_000025",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s3-D2_000025_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s3-D2_000025/predicted.pdb",
+      "pred_seq": "NPEAVRKSLLVLSEVVNQVSPHMSAAMIGVAFFSEVIGERMEMVKQLNASADKVAVTLGLRSVKVLQLLVNAETLMAAVLKFGFSVSNMMKRVSSVSRKVKGFVDKMPDMLHVLKELFVVSLVMLKFKQLLALILTTAGKFIVSLAQANASGPYFKVDLVLDLP"
+    },
+    {
+      "sample_id": "sample_T1137s4-D1_000035",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s4-D1_000035_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s4-D1_000035/predicted.pdb",
+      "pred_seq": "MPLTVVTAYFPQVNALYPGDEVMLNGVRVGSIDSIKTAGNKMKVVFHFLNKYKVPEDATASILDPSDTASRVLEISPPYTGGPTLRNGAVLDVNRTKVPIEFMKVFLEVTRLLADM"
+    },
+    {
+      "sample_id": "sample_T1137s4-D2_000015",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s4-D2_000015_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s4-D2_000015/predicted.pdb",
+      "pred_seq": "GPTPKEPEGPFGLIDKSFADGFAGQGKELLRVLFGLCIALVAMLQGFGMFFAVVQSLALFVMADHRSIEEFTAILDLLAKFVMSFVDTNEQIAIALELLMRVLQVTFKFLMRNGGVMVHLIDLLQKVVTAIIKPEPRNGIKVGLHAYPLLAAIVLLIMSPLKGGIIGMPVDPGVVMFSDPLKFVSSSIEAGSFDGYKKSAKLCAQYLAPIINAIERNYLPFGLIMASTALVDPEQ"
+    },
+    {
+      "sample_id": "sample_T1137s4-D3_000041",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s4-D3_000041_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s4-D3_000041/predicted.pdb",
+      "pred_seq": "IAYSQERNQPPPGYQLTTVPGIWCRNTNRSHGNHEPGWIVAPGMKGVKVKPATANNMTPESLAQLLGGPLNVPV"
+    },
+    {
+      "sample_id": "sample_T1137s5-D1_000032",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s5-D1_000032_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s5-D1_000032/predicted.pdb",
+      "pred_seq": "SGEWRGIADVPNPGGPGTQSGSIVLYVQLPETNALNADSFVFVRNVRVGRVRKIEMINWTPVLVVLVQPGIEIPKDVLAKIGQTSLNGSQHVEILPPKNPSSEMLRNGDVIPDAQSSAYPTIERTLAGISGILTGGG"
+    },
+    {
+      "sample_id": "sample_T1137s5-D2_000017",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s5-D2_000017_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s5-D2_000017/predicted.pdb",
+      "pred_seq": "MPLIKVIKTEVRDILNGRADQIREFNLELLVFVMQMLKEREKIVRAILSTLRMNLIVSERLLVMIRVLTKFPPIIKHFAQVRDMFAMAVVALGFMSAAALKTLSGCLALLHTLNKLLEFPLKELGRAAPYLTGALKNILVVPFMIDDLPKAIRGNYMLTSLKMDLTICSVDMAFMCGTGVCGLMFALEQAWGRNPAVMLPNTRFTPDPHNAPGGPIVKRGE"
+    },
+    {
+      "sample_id": "sample_T1137s6-D1_000027",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s6-D1_000027_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s6-D1_000027/predicted.pdb",
+      "pred_seq": "NIDTFFIKLQLVIRMVLTLVAIVVLALFYLRLPTWAGMGLYELDALLPDSGGLYATADVVYRGTTIGQVTSVQPSESGAFVKLLIYDRYKLPADATALVHSVSAVGKKFLDLVSDSGGGAYFKPGDTITKAVVPAQVGPALLAAQKGLATM"
+    },
+    {
+      "sample_id": "sample_T1137s6-D2_000012",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s6-D2_000012_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s6-D2_000012/predicted.pdb",
+      "pred_seq": "VKKKIGVMLMEAATAFGGMGPSLKRLVLCTEALAGMFRANILPVLLIIKMCGPIIISKVMCGDALEFWAAMNLTMAAQSAKNLEADFSGMEKAAPTALQLNAVFSNVRESIPKTMALLKIVLLLLERYDKLVKKVLVAIPEGAAVAETGTLFAPQGLNHFGMGMDAVPPCLVGRMPASQWRSPADVRTKPLPSGIYCKIPKNAPNAVFGAFLYPCALVPGERAATPFECRSLEPYKPLGTLTWYGNPL"
+    },
+    {
+      "sample_id": "sample_T1137s7-D1_000008",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s7-D1_000008_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s7-D1_000008/predicted.pdb",
+      "pred_seq": "NGVQIDVTGLSQSFGKSKNWENVTMSIPAGEVSVIIGPSGTGKSVFMESLIGLIRPERGSIVIDGVNMLKCSAEKLYQLRTMFGVLFQDGALRGSINLYDNVARPLREHTQESESKIREIVLEKLNLVGIPNDGHERPGQMSGGNRKRAGLARALVNNPQIILSNEPDSGLDPVRTAYLCKLLININAKLLATVLITTHDLDIARTTPDMLGMMFREQMVMFGPREVLLTSKEPVVEEFLNGRRIGPIGDSQQQNVPPQLEATPGMPERKAVARFKARTRKILHTLPPAAKAAINKELNR"
+    },
+    {
+      "sample_id": "sample_T1137s8-D1_000011",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s8-D1_000011_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s8-D1_000011/predicted.pdb",
+      "pred_seq": "IKEPLATVGGFFKMLVMTGQALRTFPFEREQFVLESWFMLFVAFLPVLAVSIPLTVLIIFVIDILDAERGAANVSGAGAANGAVTQMGPLTTVIVVAGAGSTAISANLGARTVRKEINALKVLGIDPMKFIVVPRVVASVFVARLLDGAVIVIGLVGGFRFGVYLENVSAGAYVSTLVMNTGFPEVLISVVKATLFGLIAGLVGSYRGLTVAGGSKGVGVAVLETMVNSVVALRAVNVVLTVIGTFFGTGF"
+    },
+    {
+      "sample_id": "sample_T1137s9-D1_000010",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1137s9-D1_000010_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1137s9-D1_000010/predicted.pdb",
+      "pred_seq": "TARFLLSMGHVALFVVKAITHVPHARFHYFRQSLFLVAQIGIGTGALAVIGGVVAIIGRVTICAGCMIAIQGRASLGLIGVEAFTGRFAAMALLRTTAPVVVGKALAATVGAGATAQLGALRISKQVLALEVNGIESLSYLVSTFIMAGAIVIIPLYAMAILLSFLCAKLVTTLFYSESVGTYQHYFHTFLRVDNVIWSFLQVIILSVIVLLLHCYFGYFASGGAVGVGQAVGRSLFVSDIANVMVVLLASNALYGVNPLFNLPT"
+    },
+    {
+      "sample_id": "sample_T1139-D1_000009",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1139-D1_000009_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1139-D1_000009/predicted.pdb",
+      "pred_seq": "PCDVLRNAVKNGNYDTVKVAINSDKQYDLDQKDSSGLTLVMMAAAGGEDDMLINLISKGAKVDGRQENGVTALLHAAKKNRLTTTALLLKAGARVNTQQSNGQTALMEACQFGNSDLVRMVIKSGANSNLLSKHQLSAMHRAQKCNNTNVYNMLKNHDETISRVAKETLENYFKARLAIDKPVFPLASHRLSQGPMFSTNFDYEPPENLPEGSGNLLFLFHANFDGKKTLAFLSGPSSVQAVVINDKRQNPVFLNSHRVYSFSPVAGTMELRLFLTQAPSAKVELLIGAYRVKLE"
+    },
+    {
+      "sample_id": "sample_T1145-D1_000040",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1145-D1_000040_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1145-D1_000040/predicted.pdb",
+      "pred_seq": "SGSKAYFDNSKYGWENVYVYAYGTEKLAEWPGKLLTKQDSGLYEASFASSFESQQILFLNGNKEGDGQKKYPEAEGMSMEAGQSKILTAEEKYLDYGKP"
+    },
+    {
+      "sample_id": "sample_T1150-D1_000007",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1150-D1_000007_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1150-D1_000007/predicted.pdb",
+      "pred_seq": "RLERATRDYLEWLALYVTPVQSLLEIKYKAMASSARPRIRATRYRFMERWPKVCAEFADAPTVLGTGDLHTENFGVWRNAQGRLVWGINDFNEAAHFPYVMDIIFLATSAILAIQQNHLHLSADVACVAILKGYLKSLAQGGFPYVLAQKHGWLRHLTTGKNRMPEKFFHKMLAMPQVKGPIPESAQVALKHILPAQGLSYQLKRRIAGLGSLGFPRYAAIAEWEGGMVVFEAEAILPSAADWAAGMKFAVKLYYKALLDRAVFSRDPFVRLEGHWLVRRLAPLCSRIKLSELPKERDEERLLHALGRQTADVHNGCPNCMANVLPHVQRLKASELRSAADALVQATMM"
+    },
+    {
+      "sample_id": "sample_T1157s1-D2_000036",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1157s1-D2_000036_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1157s1-D2_000036/predicted.pdb",
+      "pred_seq": "PHEVVLERASLTKETDGGSAFDRLDCGKNMQRICVNRDRVISNSGIQIVLELVEKGERKRRVTKLNGIPLGRNEFVTILRADLGDVCDPRFNIVRDRFYIQCSGVEVQDLIVND"
+    },
+    {
+      "sample_id": "sample_T1157s1-D3_000016",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1157s1-D3_000016_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1157s1-D3_000016/predicted.pdb",
+      "pred_seq": "PVNAQLQELHEVMLLNITTTQKHPMIDLVSDSEVPNTAIDSAMLPNLSSFVKSLFARNSNNVSVCPNPSCNLPNNVVNNEVAIITTGNGAATLPPAASDCPSGAPNPTRGPVPESNFPWKVIYAAGEACAGPLPDSATRKNQVLLLRRGGCSFSNKNALIPAFTPSKKSLQLVTTTSNDQHEGESGLVRPLLLQDEHTPGGNPRRHPMANTDVGGGQTVYQELSVASALGMER"
+    },
+    {
+      "sample_id": "sample_T1157s2-D1_000039",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1157s2-D1_000039_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1157s2-D1_000039/predicted.pdb",
+      "pred_seq": "SITIELKKNTFDDFIKSLDIVMAEFRAPWCGHSKALAPEYEEAATILEDKNLKMVEVDCTKETKLCKEHGVQGYPTLEVFRGNNDVTPYQGERQAAAIVSYIIQQS"
+    },
+    {
+      "sample_id": "sample_T1157s2-D2_000018",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1157s2-D2_000018_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1157s2-D2_000018/predicted.pdb",
+      "pred_seq": "MTAVSNVTKDVLKEFKKADEVVIVAYVLASDKASAKVFEKTAKELRNNYPFGSSSDAELAKAEGVEAPALVIYKNFDEGKAVRVEKFNEKANKEWAKTAATPNIGKIGPETYGKYLAAGIPIAYIFAKTPKEREKLSKQLQPIAQATRGKILFGTLDAKAYGAHAGNLNMKTDKFPAFAIQETTENKKFPYNENEKITHDSLEKFTNNYNAGKIKPS"
+    },
+    {
+      "sample_id": "sample_T1157s2-D3_000031",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1157s2-D3_000031_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1157s2-D3_000031/predicted.pdb",
+      "pred_seq": "IKSEPIPEKEQGPVTVVVAKTYNNITLNDTKNVLIEFYAPHCGHCEALAPKYEELGFIYSLSEFKDRTVMAQIDATANDVPLNIMGFPTIKLYPAGAKNEPVTYSGLFSVKNLMEFTAKIGKYQALLSEIQKKNATAASSS"
+    },
+    {
+      "sample_id": "sample_T1170-D1_000014",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1170-D1_000014_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1170-D1_000014/predicted.pdb",
+      "pred_seq": "VLFPQYFEEYLGKDKVKNQLKIRMKAAKLRDKALDHTLLFGPPGLGKTTMARVIALELGVDMKQTSGPAIKKAGILVAILNLLQPGDILFIDEIHRLPDAVQKVLYSALENYYLDLMIGAGQVSRSTHMILPPFTLVGATTFAGLLSDPLRARFGIDGHLEYYEDPDLTEIVKRVSKIRKLVITPEAADKLARRSFGVPRIALRLLERVRDYAQLNGDGVINNKIADKALTILNVDHKGL"
+    },
+    {
+      "sample_id": "sample_T1170-D2_000042",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1170-D2_000042_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1170-D2_000042/predicted.pdb",
+      "pred_seq": "DYVNEKILRTLIELYGGGPVGLGVLSVLMAEKFETVENLWEPYLIEQGRLIRTRTGFVATAEAYKHLGYNYT"
+    },
+    {
+      "sample_id": "sample_T1180-D1_000005",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1180-D1_000005_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1180-D1_000005/predicted.pdb",
+      "pred_seq": "ARPKLSVPITAPNRDGMIFETEKLAKMPVKMVERRMNFFAGYGFQMLIVITELKRVMDKQELIVTIRPVAEGGEEMGSRFDYFETIRKLLQQQVADYVNVEAARNKEEVEALCKEYSNSKTKVIGSYHDRSEVPSADQIEQRMCEAKESGSYAGELACLPKTFKDVDVNLNAVAALKKKFPDFPLNVNSLGKLGQVCFLYGGLYGSRVSFGSTSEASAPGQVYYETLSEVRDKIYKGNRHLILLGRDGTGKSKISHELSRNAKFDEIDVDEWMQKQKGRALSDIRAEKGEVYRRMLQTSLIIQLGDLEPAIISCGGGMALREIDVFKMQAIGTVVLLVAKPAAAELNEARFTYYQHAATVVVSVIGQNLTEIAAKILAACR"
+    },
+    {
+      "sample_id": "sample_T1187-D1_000024",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1187-D1_000024_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1187-D1_000024/predicted.pdb",
+      "pred_seq": "AGKWIAARDMKITWKKLPEYWVWQVVDPNNEVAQLRRTAWLDIYGEIQTKDLDRQTSYAVYLVFKLTNNPTEIEFATASMRFTNEVAKGAGDQGTTVFISKAQKLPGQDGRFPHLRSDGWMQLKLGEFFINNGELGQVQMRIMENNLKKWKSGLIVKGFLMRPI"
+    },
+    {
+      "sample_id": "sample_T1194-D1_000026",
+      "esmfold_pdb": "/home/junyu/project/pu/outputs/evaluation_129_complete/esmfold_predictions/ODE_129_100step/sample_T1194-D1_000026_esmfold.pdb",
+      "gt_pdb": "/home/junyu/project/pu/outputs/predict_step_ode_129_100step/sample_T1194-D1_000026/predicted.pdb",
+      "pred_seq": "GFTEVAGDACQWTPGRYQLSQVEGRVRLPNGLYVEKEKTSKIARGSCTFALVLEAPAGKEIVVRDSKQLLSMRAYPKETRVKAKTKLFKAGSEGAEKTLEITAAEEAKEVVQYVGEKNVLLKTACGGSNILRGNMSAVNIGQGKGRARAEDVTLNIKEVNC"
+    }
+  ]
+}
