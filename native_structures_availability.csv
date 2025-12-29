@@ -1,0 +1,41 @@
+sample_name,pdb_id,has_native,native_file
+sample_1kzf_000021,1kzf,True,1kzf.cif
+sample_1p6e_000019,1p6e,False,NOT FOUND
+sample_1p9w_000000,1p9w,False,NOT FOUND
+sample_1qq4_000023,1qq4,False,NOT FOUND
+sample_1w8c_000011,1w8c,False,NOT FOUND
+sample_1w8c_000013,1w8c,False,NOT FOUND
+sample_1zz2_000006,1zz2,False,NOT FOUND
+sample_2f60_000037,2f60,True,2f60.cif
+sample_2r3o_000012,2r3o,False,NOT FOUND
+sample_2xmf_000035,2xmf,False,NOT FOUND
+sample_3c8f_000015,3c8f,True,3c8f.cif
+sample_3fs5_000027,3fs5,True,3fs5.cif
+sample_3iw6_000009,3iw6,True,3iw6.cif
+sample_3kfh_000025,3kfh,True,3kfh.cif
+sample_3kfi_000029,3kfi,True,3kfi.cif
+sample_3nwm_000001,3nwm,False,NOT FOUND
+sample_3nwm_000002,3nwm,False,NOT FOUND
+sample_3nwm_000004,3nwm,False,NOT FOUND
+sample_3rey_000014,3rey,False,NOT FOUND
+sample_3srg_000005,3srg,False,NOT FOUND
+sample_4eh2_000007,4eh2,True,4eh2.cif
+sample_4eh7_000008,4eh7,True,4eh7.cif
+sample_4ggr_000034,4ggr,True,4ggr.cif
+sample_4tm8_000018,4tm8,False,NOT FOUND
+sample_5c7a_000031,5c7a,True,5c7a.cif
+sample_5cmv_000028,5cmv,True,5cmv.cif
+sample_5eca_000036,5eca,True,5eca.cif
+sample_5eca_000038,5eca,True,5eca.cif
+sample_5l33_000033,5l33,True,5l33.cif
+sample_5nsa_000030,5nsa,False,NOT FOUND
+sample_5nv1_000039,5nv1,False,NOT FOUND
+sample_5r5e_000010,5r5e,False,NOT FOUND
+sample_5w76_000003,5w76,False,NOT FOUND
+sample_5zdm_000020,5zdm,False,NOT FOUND
+sample_5zdm_000022,5zdm,False,NOT FOUND
+sample_6cyo_000026,6cyo,True,6cyo.cif
+sample_6piz_000024,6piz,False,NOT FOUND
+sample_6uf5_000017,6uf5,False,NOT FOUND
+sample_7c65_000032,7c65,True,7c65.cif
+sample_7l1w_000016,7l1w,True,7l1w.cif

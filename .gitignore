@@ -1,0 +1,50 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# IDE settings
+.idea/
+.vscode/
+
+# Checkpoints, logs, and experiment outputs
+ckpt/
+experiments/.cache/
+experiments/ckpt/
+experiments/lightning_logs/
+experiments/outputs/
+experiments/wandb/
+inference_outputs/
+evaluations/
+fbb_evaluation_all/
+fbb_evaluation_test/
+mpnn_evaluation/
+outputs/
+hub/checkpoints/
+output/weight/
+lightning_logs/
+
+# Evaluation outputs
+esmfold_eval/
+esmfold_evaluation/
+esmfold_r3_eval/
+
+# Preprocessed data
+examples/*/preprocessed/
+
+# Generated data artifacts
+data/preprocessed/
+*.npz
+*.ckpt
+*.pt
+*.log
+
+# Generated visualizations
+design_*.pdb
+*.png
+
+# Miscellaneous large artifacts
+confidence_summary.csv
+media/
+se3_flow_matching.egg-info/
+metadata/
+

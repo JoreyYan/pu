@@ -6,398 +6,23 @@ from models.node_feature_net import NodeFeatureNet
 from models.edge_feature_net import EdgeFeatureNet, EdgeFeatureNet_backuo
 from models import ipa_pytorch  # ,so3_theta,rope3D
 from models import GA_block
-from data.GaussianRigid import OffsetGaussianRigid
+from openfold.utils import rigid_utils as ru
 from data import utils as du
 # from models.resnet import Conv2DFeatureExtractor
 # from models.basic_vae import Encoder, Decoder
-from openfold.model.primitives import Linear
+# from models.hours._hourglass import HourglassProteinCompressionTransformer
 from models import utils as mu
 from models.features.backbone_gnn_feature import BackboneEncoderGNN
-from openfold.np.residue_constants import restype_name_to_atom14_names
-# from models.shattetnion.shframeawareattention import SHTransformer
-from models.shattetnion.ShDecoderSidechain import \
-    NodeFeatExtractorWithHeads, SHFeatureHead, Atom112type  # ,SHSidechainDecoder,DynamicKSidechainDecoder,SHTypeHybridHead,SHGeoResHead,assemble_atom14
-# from models.shattetnion.SHTemplateRefiner import SHTemplateRefiner
-# from models.shattetnion.SHTemplateRefinerHard import SHTemplateRefinerHard,build_residue_meta_dict_from_rc
-# from models.shattetnion.Frameaware import FrameAwareTransformerRot
 from models.shattetnion.ShDecoderSidechain import Feat2Atom11, SideAtomsFeatureHead,SequenceHead
-from models.IGA import InvariantGaussianAttention,GaussianUpdateBlock
-from models.components.positional_embeddings import FourierPositionEncoding
-# ESM imports
+from data.GaussianRigid import OffsetGaussianRigid
 from models.components.frozen_esm import FrozenEsmModel, ESM_REGISTRY
 from models.components.sequence_adapters import SequenceToTrunkNetwork
 from openfold.model.primitives import Linear, LayerNorm
-
-
-
-class SideAtomsFlowModel(nn.Module):
-    """
-    FlowModel that incorporates noisy sidechain atom features using SideAtomsFeatureHead
-    """
-
-    def __init__(self, model_conf):
-        super(SideAtomsFlowModel, self).__init__()
-        self._model_conf = model_conf
-        self._ipa_conf = model_conf.ipa
-        self.rigids_ang_to_nm = lambda x: x.apply_trans_fn(lambda x: x * du.ANG_TO_NM_SCALE)
-        self.rigids_nm_to_ang = lambda x: x.apply_trans_fn(lambda x: x * du.NM_TO_ANG_SCALE)
-        self.node_feature_net = NodeFeatureNet(model_conf.node_features)
-        self.edge_feature_net = EdgeFeatureNet(model_conf.edge_features)
-
-        self.feature_graph = BackboneEncoderGNN(dim_nodes=self._ipa_conf.c_s)
-
-        # Feature fusion layer to combine node features with sidechain features
-        sidechain_hidden = getattr(model_conf, 'sidechain_atoms', {}).get('hidden', 256)
-
-
-        # ESM sequence encoder (optional)
-        self.use_esm = getattr(model_conf, 'use_esm', False)
-        if self.use_esm:
-            esm_model_name = getattr(model_conf, 'esm_model', 'esm2_650M')
-            print(f'Initializing ESM model for SideAtomsFlowModel: {esm_model_name}')
-            self.seq_encoder = FrozenEsmModel(
-                model_key=esm_model_name,
-                use_esm_attn_map=True  # Get pair representation from attention
-            )
-            self.sequence_to_trunk = SequenceToTrunkNetwork(
-                esm_single_dim=self.seq_encoder.single_dim,
-                num_layers=self.seq_encoder.num_layers,
-                d_single=self._ipa_conf.c_s,  # Match node feature dim
-                esm_attn_dim=self.seq_encoder.attn_head * self.seq_encoder.num_layers,
-                d_pair=self._model_conf.edge_embed_size,  # Match edge feature dim
-                position_bins=32,
-                pairwise_state_dim=self._model_conf.edge_embed_size,
-            )
-            print(f'ESM initialized: single_dim={self.seq_encoder.single_dim}, '
-                  f'num_layers={self.seq_encoder.num_layers}, '
-                  f'attn_heads={self.seq_encoder.attn_head}')
-
-            self.feature_fusion = nn.Sequential(
-                nn.Linear(self._ipa_conf.c_s + sidechain_hidden + self._ipa_conf.c_s + self._ipa_conf.c_s,
-                          self._ipa_conf.c_s),
-                nn.LayerNorm(self._ipa_conf.c_s),
-                nn.SiLU(),
-                nn.Linear(self._ipa_conf.c_s, self._ipa_conf.c_s)
-            )
-
-            self.edge_feature_fusion = nn.Sequential(
-                nn.Linear(self._ipa_conf.c_z + self._ipa_conf.c_z + self._model_conf.edge_embed_size,
-                          self._ipa_conf.c_z),
-                nn.LayerNorm(self._ipa_conf.c_z),
-                nn.SiLU(),
-                nn.Linear(self._ipa_conf.c_z, self._ipa_conf.c_z)
-            )
-        else:
-            self.seq_encoder = None
-            self.sequence_to_trunk = None
-
-            self.feature_fusion = nn.Sequential(
-                nn.Linear(self._ipa_conf.c_s + sidechain_hidden + self._ipa_conf.c_s ,
-                          self._ipa_conf.c_s),
-                nn.LayerNorm(self._ipa_conf.c_s),
-                nn.SiLU(),
-                nn.Linear(self._ipa_conf.c_s, self._ipa_conf.c_s)
-            )
-
-            self.edge_feature_fusion = nn.Sequential(
-                nn.Linear(self._ipa_conf.c_z + self._ipa_conf.c_z ,
-                          self._ipa_conf.c_z),
-                nn.LayerNorm(self._ipa_conf.c_z),
-                nn.SiLU(),
-                nn.Linear(self._ipa_conf.c_z, self._ipa_conf.c_z)
-            )
-
-        # LayerNorm for each feature source before concatenation (to match scales)
-        self.node_feature_ln = nn.LayerNorm(self._ipa_conf.c_s)
-        sidechain_hidden = getattr(model_conf, 'sidechain_atoms', {}).get('hidden', 256)
-        self.sidechain_feature_ln = nn.LayerNorm(sidechain_hidden)
-        self.graph_feature_ln = nn.LayerNorm(self._ipa_conf.c_s)
-        if self.use_esm:
-            self.esm_feature_ln = nn.LayerNorm(self._ipa_conf.c_s)
-
-        # Edge feature LayerNorms
-        self.edge_init_ln = nn.LayerNorm(self._model_conf.edge_embed_size)
-        self.edge_graph_ln = nn.LayerNorm(self._ipa_conf.c_z)
-        if self.use_esm:
-            self.edge_esm_ln = nn.LayerNorm(self._model_conf.edge_embed_size)
-
-        # Sidechain atom feature extractor
-        sidechain_conf = getattr(model_conf, 'sidechain_atoms', {})
-        self.sidechain_head = SideAtomsFeatureHead(
-            A=sidechain_conf.get('A', 11),  # number of sidechain atoms
-            hidden=sidechain_conf.get('hidden', 256),
-            num_classes=0,  # we only want features, not classification
-            dropout=sidechain_conf.get('dropout', 0.1),
-            conv_blocks=sidechain_conf.get('conv_blocks', 4),
-            mlp_blocks=sidechain_conf.get('mlp_blocks', 4),
-            fuse_blocks=sidechain_conf.get('fuse_blocks', 4),
-            conv_groups=sidechain_conf.get('conv_groups', 1)
-        )
-
-        self.atoms_head = Feat2Atom11()
-
-        # Attention trunk
-        self.trunk = nn.ModuleDict()
-        for b in range(self._ipa_conf.num_blocks):
-            self.trunk[f'ipa_{b}'] = ipa_pytorch.InvariantPointAttention(self._ipa_conf)
-            self.trunk[f'ipa_ln_{b}'] = nn.LayerNorm(self._ipa_conf.c_s)
-            tfmr_in = self._ipa_conf.c_s
-            tfmr_layer = torch.nn.TransformerEncoderLayer(
-                d_model=tfmr_in,
-                nhead=self._ipa_conf.seq_tfmr_num_heads,
-                dim_feedforward=tfmr_in,
-                batch_first=True,
-                dropout=0.0,
-                norm_first=False
-            )
-            self.trunk[f'seq_tfmr_{b}'] = torch.nn.TransformerEncoder(
-                tfmr_layer, self._ipa_conf.seq_tfmr_num_layers, enable_nested_tensor=False)
-            self.trunk[f'post_tfmr_{b}'] = ipa_pytorch.Linear(
-                tfmr_in, self._ipa_conf.c_s, init="final")
-            self.trunk[f'node_transition_{b}'] = ipa_pytorch.StructureModuleTransition(
-                c=self._ipa_conf.c_s)
-            # self.trunk[f'bb_update_{b}'] = ipa_pytorch.BackboneUpdate(
-            #     self._ipa_conf.c_s, use_rot_updates=True)
-
-            if b < self._ipa_conf.num_blocks - 1:
-                # No edge update on the last block.
-                edge_in = self._model_conf.edge_embed_size
-                self.trunk[f'edge_transition_{b}'] = ipa_pytorch.EdgeTransition(
-                    node_embed_size=self._ipa_conf.c_s,
-                    edge_embed_in=edge_in,
-                    edge_embed_out=self._model_conf.edge_embed_size,
-                )
-
-
-
-
-
-
-        # Pairwise fusion for sidechain self-conditioning: [curr_sc_feat, sc_feat] -> sc_feat
-        self.sc_pair_fusion = nn.Sequential(
-            nn.Linear(2 * sidechain_hidden, sidechain_hidden),
-            nn.LayerNorm(sidechain_hidden),
-            nn.SiLU(),
-            nn.Linear(sidechain_hidden, sidechain_hidden)
-        )
-
-
-
-        self.NodeFeatExtractorWithHeads = NodeFeatExtractorWithHeads()
-
-    def _make_seq_mask_pattern(self, batch):
-        aatype = batch["aatype"]
-        if self.is_scaffolding_generation:
-            return 1.0 - batch["fixed_mask"]
-        if self._is_conditional_generation:
-            # no masking during conditional generation
-            return torch.zeros_like(aatype)
-
-        if not self.training:
-            # mask the entire sequence for inference
-            return torch.ones_like(aatype)
-
-        pattern = torch.zeros_like(aatype)
-        rows_to_mask = (
-                torch.rand(aatype.shape[0]) < self.config.model.p_mask_sequence
-        ).to(aatype.device)
-        pattern[rows_to_mask] = 1
-        return pattern
-
-    def forward(self, input_feats, t_set=None):
-        node_mask = input_feats['res_mask']
-        edge_mask = node_mask[:, None] * node_mask[:, :, None]
-        diffuse_mask = input_feats['diffuse_mask']
-        res_index = input_feats['res_idx']
-        chain_idx = input_feats['chain_idx']
-
-        noise_t = input_feats['r3_t']
-
-        if t_set is not None:
-            noise_t = torch.tensor([t_set], dtype=torch.float32, device=noise_t.device).unsqueeze(0)
-
-        rotmats_t = input_feats['rotmats_1']
-        trans_t = input_feats['trans_1']
-
-
-
-        # Initialize node and edge embeddings
-        init_node_embed = self.node_feature_net(
-            noise_t,
-            node_mask,
-            diffuse_mask,
-            res_index
-        )
-
-        # Extract sidechain atom features if available
-        sidechain_features = None
-        sidechain_features_sc = None
-        if 'atoms14_local_t' in input_feats and 'atom14_gt_exists' in input_feats:
-            # Extract sidechain atoms (indices 3-13, assuming backbone is 0-2)
-            atoms14_local_t = input_feats['atoms14_local_t']  # [B,N,14,3]
-           # atom14_exists = input_feats['atom14_gt_exists']  # [B,N,14]
-
-            # Get sidechain atoms only (indices 3:13)
-            sidechain_atoms = atoms14_local_t[..., 4:14, :]  # [B,N,11,3]
-            sidechain_atom_mask = input_feats['sidechain_atom_mask']  # [B,N,11]
-
-            # Extract features using SideAtomsFeatureHead
-
-            _, sidechain_features = self.sidechain_head(
-                sidechain_atoms,
-                atom_mask=sidechain_atom_mask,
-                node_mask=node_mask
-            )  # [B,N,sidechain_hidden]
-
-            # Optional sidechain self-conditioning branch
-            if 'atoms14_local_sc' in input_feats:
-                atoms14_local_sc = input_feats['atoms14_local_sc']  # scaled coordinates
-                sc_side_atoms = atoms14_local_sc[..., 4:14, :]
-                sc_side_mask = sidechain_atom_mask
-                _, sidechain_features_sc = self.sidechain_head(
-                    sc_side_atoms,
-                    atom_mask=sc_side_mask,
-                    node_mask=node_mask
-                )  # [B,N,sidechain_hidden]
-
-
-        atoms14_local_for_graph = atoms14_local_t
-        node_h, edge_h, edge_idx, mask_i, mask_ij = self.feature_graph(
-            atoms14_local_for_graph[..., :4, :], chain_idx
-        )
-
-        # Process ESM sequence features if enabled
-        if self.use_esm and self.seq_encoder is not None and 'aatype' in input_feats:
-            # Extract ESM features: single (node) and pair (attention map)
-            seq_emb_s, seq_emb_z = self.seq_encoder(
-                input_feats['aatype'],
-                chain_idx,
-                attn_mask=node_mask,
-            )
-            # Project ESM features to trunk dimensions
-            seq_emb_s, seq_emb_z = self.sequence_to_trunk(
-                seq_emb_s, seq_emb_z, res_index, node_mask
-            )
-            # # Fuse ESM features into structure features
-            # node_h = node_h + seq_emb_s
-            # edge_h = edge_h + seq_emb_z
-
-        # Fuse sidechain features with node embeddings if available
-        if sidechain_features is not None:
-            # Fuse SC if provided
-            if sidechain_features_sc is not None:
-                sidechain_features = self.sc_pair_fusion(
-                    torch.cat([sidechain_features, sidechain_features_sc], dim=-1)
-                )
-
-            # Normalize each feature source before concatenation to match scales
-            init_node_embed_norm = self.node_feature_ln(init_node_embed)
-            sidechain_features_norm = self.sidechain_feature_ln(sidechain_features)
-            node_h_norm = self.graph_feature_ln(node_h)
-
-            # Concatenate and fuse features
-            if self.use_esm:
-                seq_emb_s_norm = self.esm_feature_ln(seq_emb_s)
-                combined_features = torch.cat([init_node_embed_norm, sidechain_features_norm, node_h_norm, seq_emb_s_norm], dim=-1)
-            else:
-                combined_features = torch.cat([init_node_embed_norm, sidechain_features_norm, node_h_norm], dim=-1)
-            init_node_embed = self.feature_fusion(combined_features)
-            # Apply masking to fused features
-            init_node_embed = init_node_embed * node_mask[..., None]
-
-        # Keep trans_sc zeros (disable trans-based SC)
-
-        init_edge_embed = self.edge_feature_net(
-            init_node_embed,
-            trans_t,
-
-            edge_mask,
-            diffuse_mask,
-        )
-
-        # Normalize edge features before concatenation to match scales
-        init_edge_embed_norm = self.edge_init_ln(init_edge_embed)
-        edge_h_norm = self.edge_graph_ln(edge_h)
-
-        if self.use_esm:
-            seq_emb_z_norm = self.edge_esm_ln(seq_emb_z)
-            init_edge_embed = self.edge_feature_fusion(torch.cat([init_edge_embed_norm, edge_h_norm, seq_emb_z_norm], dim=-1))
-        else:
-            init_edge_embed = self.edge_feature_fusion(torch.cat([init_edge_embed_norm, edge_h_norm], dim=-1))
-        # Initial rigids
-        curr_rigids = du.create_rigid(rotmats_t, trans_t)
-
-        # Main trunk
-        curr_rigids = self.rigids_ang_to_nm(curr_rigids)
-        node_embed = init_node_embed * node_mask[..., None]
-        edge_embed = init_edge_embed * edge_mask[..., None]
-        for b in range(self._ipa_conf.num_blocks):
-            ipa_embed = self.trunk[f'ipa_{b}'](
-                node_embed,
-                edge_embed,
-                curr_rigids,
-                node_mask,
-            )
-            ipa_embed *= node_mask[..., None]
-            node_embed = self.trunk[f'ipa_ln_{b}'](node_embed + ipa_embed)
-            seq_tfmr_out = self.trunk[f'seq_tfmr_{b}'](
-                node_embed, src_key_padding_mask=(1 - node_mask).to(torch.bool))
-            node_embed = node_embed + self.trunk[f'post_tfmr_{b}'](seq_tfmr_out)
-            node_embed = self.trunk[f'node_transition_{b}'](node_embed)
-            node_embed = node_embed * node_mask[..., None]
-
-            if b < self._ipa_conf.num_blocks - 1:
-                edge_embed = self.trunk[f'edge_transition_{b}'](
-                    node_embed, edge_embed)
-                edge_embed *= edge_mask[..., None]
-
-        atoms14_pred=None
-        if atoms14_pred is not None:
-            speed_vectors = atoms14_pred[..., 3:14, :]
-        else:
-            speed_vectors, logits = self.NodeFeatExtractorWithHeads(node_embed, node_mask)
-
-        curr_rigids_ang = self.rigids_nm_to_ang(curr_rigids)
-        atoms14_local_t = input_feats.get('atoms14_local_t')
-        if atoms14_local_t is not None:
-            backbone_local = atoms14_local_t[..., :3, :]
-            xt_side = atoms14_local_t[..., 3:, :]
-        else:
-            backbone_local = torch.zeros(
-                *speed_vectors.shape[:2], 3, 3,
-                device=speed_vectors.device,
-                dtype=speed_vectors.dtype,
-            )
-            xt_side = torch.zeros_like(speed_vectors)
-
-        r3_t = input_feats.get('r3_t')
-        if r3_t is None:
-            t_factor = torch.ones((*speed_vectors.shape[:2], 1, 1),
-                                  device=speed_vectors.device,
-                                  dtype=speed_vectors.dtype)
-        else:
-            if r3_t.dim() == 1:
-                r3_t = r3_t[:, None]
-            t_factor = (1.0 - r3_t)[..., None, None].to(dtype=speed_vectors.dtype)
-        side_atoms = xt_side + t_factor * speed_vectors
-
-
-
-        # local_full = torch.cat([backbone_local, side_atoms], dim=-2)
-        # global_full = curr_rigids_ang[..., None].apply(local_full)
-
-        speed_pred = speed_vectors.norm(dim=-1)
-
-        return {
-            'speed_vectors': speed_vectors,
-            'speed_pred': speed_pred,
-            'side_atoms': side_atoms,
-            # 'side_atoms_local_full': local_full,
-            # 'atoms_global_full': global_full,
-            # 'rigids_global': curr_rigids_ang,
-            'logits': logits,
-        }
-
+from models.shattetnion.ShDecoderSidechain import Feat2Atom11, SideAtomsFeatureHead
+from models.IGA import InvariantGaussianAttention,GaussianUpdateBlock,BottleneckIGAModule
+from models.downblock import HierarchicalDownsampleIGAModule
+from models.upsample_block import HierarchicalUpsampleIGAModule
+from models.finnalup import FinalCoarseToFineIGAModule
 
 # ============================================================================
 # 4. 输出头 (Differentiable Atom Head)
@@ -507,17 +132,13 @@ class SidechainAtomHead(nn.Module):
 
 
 
-# 假设你已经定义好了这些模块
-# from iga import InvariantGaussianAttention
-# from gaussian_rigid import OffsetGaussianRigid
-
-class SideAtomsIGAModel(nn.Module):
+class HierarchicalGaussianFieldModel(nn.Module):
     """
     IGA-Based Model preserving original feature extraction logic.
     """
 
     def __init__(self, model_conf):
-        super(SideAtomsIGAModel, self).__init__()
+        super(HierarchicalGaussianFieldModel, self).__init__()
         self._model_conf = model_conf
         self._ipa_conf = model_conf.ipa
 
@@ -660,6 +281,47 @@ class SideAtomsIGAModel(nn.Module):
             self.trunk[f'Gau_update_{b}'] = GaussianUpdateBlock(
                 self._ipa_conf.c_s)
 
+        self.downsampler = HierarchicalDownsampleIGAModule(
+            c_s=self._ipa_conf.c_s,
+            iga_conf=self._ipa_conf,
+            OffsetGaussianRigid_cls=OffsetGaussianRigid,
+            num_downsample=2,  # 你要的 K 次
+            ratio=6.0,
+            k_max_cap=64,
+            coarse_iga_layers=4,  # 每次 down 后 IGA 4 次
+        )
+
+        self.upsampler = HierarchicalUpsampleIGAModule(
+            c_s=self._ipa_conf.c_s,
+            iga_conf=self._ipa_conf,
+            OffsetGaussianRigid_cls=OffsetGaussianRigid,
+            num_upsample=2,
+            M_max=8,
+            K_target=None,  # 不写死，自动按 up_ratio 生成期望预算
+            up_ratio=2.0,
+            neighbor_R=2,
+            coarse_iga_layers=4,
+        )
+
+        self.bottleneck = BottleneckIGAModule(
+            c_s=self._ipa_conf.c_s,
+            iga_conf=self._ipa_conf,
+            bottleneck_layers=getattr(model_conf, "bottleneck_layers", 6),
+            layer_idx_base=3000,
+            enable_vis=False,
+        )
+
+        self.final_up = FinalCoarseToFineIGAModule(
+            c_s=self._ipa_conf.c_s,
+            iga_conf=self._ipa_conf,
+            OffsetGaussianRigid_cls=OffsetGaussianRigid,
+            num_refine_layers=4,
+            neighbor_R=2,  # R=1 最稳；R=2/4 纠错更强
+            w_attach=1.0,
+            w_entB=0.0,  # 后期你再退火加到 1e-3~1e-2
+            enable_occ_loss=False,
+        )
+
         # ============================================================
         # 3. Output Heads (Differentiable Atom & Sequence)
         # ============================================================
@@ -671,7 +333,7 @@ class SideAtomsIGAModel(nn.Module):
         # Sequence Head
         self.logits_head = SequenceHead(self._ipa_conf.c_s, self._ipa_conf.c_s, num_classes=21)
 
-    def forward(self, input_feats, sideonly=False):
+    def forward(self, input_feats,step,total_steps, sideonly=False):
         """
         Forward logic merging original feature extraction with IGA trunk.
         """
@@ -923,7 +585,44 @@ class SideAtomsIGAModel(nn.Module):
                 mask=input_feats['update_mask']  # <--- 传入 mask
             )
 
-            # ------------------------------------------------------------
+
+        #down
+
+        levels_down, pool_reg = self.downsampler(
+            s_f=node_embed,
+            r_f=curr_rigids,
+            mask_f=node_mask,
+            step=step,  # 训练时传 global_step
+            total_steps=total_steps,  # 训练时传 total_steps
+        )
+
+        # --- take coarsest level ---
+        coarsest = levels_down[-1]
+        sL = coarsest["s"]
+        rL = coarsest["r"]
+        mL = coarsest["mask"]
+
+        # --- bottleneck IGA refine (must-have) ---
+        sL, rL = self.bottleneck(sL, rL, mL)
+
+        levels_up, up_reg = self.upsampler(
+            s_l=sL,
+            r_l=rL,
+            mask_l=mL,
+            step=step,
+            total_steps=total_steps,
+        )
+
+        final_levels, final_reg = self.final_up(
+            s_parent=s_last, r_parent=r_last, mask_parent=mask_last,
+            node_mask=node_mask,
+            res_idx=input_feats["res_idx"],
+        )
+        # residue-level output:
+        s_res = final_levels[-1]["s"]
+        r_res = final_levels[-1]["r"]
+
+        # ------------------------------------------------------------
         # C. Output Heads (Coordinates & Logits)
         # ------------------------------------------------------------
         # 1. Logits
