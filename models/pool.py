@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from data.GaussianRigid import OffsetGaussianRigid,save_gaussian_as_pdb
 from openfold.utils.rigid_utils import Rotation
-from models.loss import HierarchicalGaussianLoss
+from models.IGA import fused_gaussian_overlap_score
 def gaussian_geo_features(Sigma: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """
     Sigma: [B, N, 3, 3] (对称/近似SPD)
@@ -42,16 +42,38 @@ def choose_K(N: int, ratio: float = 12.0, k_min: int = 1, k_max: Optional[int] =
     return k
 
 
-def merge_gaussians_soft(mu: torch.Tensor, Sigma: torch.Tensor, A: torch.Tensor, eps: float = 1e-8):
-    B, N, K = A.shape
-    w = A / (A.sum(dim=1, keepdim=True) + eps)         # [B, N, K]
-    mu_c = torch.einsum("bnk,bnd->bkd", w, mu)         # [B, K, 3]
-    intra = torch.einsum("bnk,bnij->bkij", w, Sigma)   # [B, K, 3, 3]
-    diff = mu.unsqueeze(2) - mu_c.unsqueeze(1)         # [B, N, K, 3]
-    outer = diff.unsqueeze(-1) * diff.unsqueeze(-2)    # [B, N, K, 3, 3]
-    inter = torch.einsum("bnk,bnkij->bkij", w, outer)  # [B, K, 3, 3]
+def merge_gaussians_soft(mu, Sigma, A, mask=None, eps=1e-8, jitter=1e-6):
+    """
+    mu:    [B,N,3]
+    Sigma: [B,N,3,3]
+    A:     [B,N,K]
+    mask:  [B,N] in {0,1} (optional)
+    Return:
+      mu_c:    [B,K,3]
+      Sigma_c: [B,K,3,3]  (SPD-ish)
+    """
+    if mask is not None:
+        A = A * mask.unsqueeze(-1)
+
+    denom = A.sum(dim=1, keepdim=True).clamp_min(eps)  # [B,1,K]
+    w = A / denom                                       # [B,N,K]
+
+    mu_c = torch.einsum("bnk,bnd->bkd", w, mu)          # [B,K,3]
+
+    # intra: E[Sigma_i]
+    intra = torch.einsum("bnk,bnij->bkij", w, Sigma)    # [B,K,3,3]
+
+    # inter: Cov(mu_i)
+    diff = mu.unsqueeze(2) - mu_c.unsqueeze(1)          # [B,N,K,3]
+    inter = torch.einsum("bnk,bnkd,bnke->bkde", w, diff, diff)  # [B,K,3,3]
+
     Sigma_c = intra + inter
+    Sigma_c = 0.5 * (Sigma_c + Sigma_c.transpose(-1, -2))
+
+    I = torch.eye(3, device=Sigma_c.device, dtype=Sigma_c.dtype)
+    Sigma_c = Sigma_c + jitter * I  # broadcast [3,3] -> [B,K,3,3]
     return mu_c, Sigma_c
+
 
 
 def gaussian_overlap_score(delta: torch.Tensor, sigma: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -69,142 +91,303 @@ class PoolLoss:
     total: torch.Tensor
 
 
-class LearnOnlyGaussianPooling(nn.Module):
+import math
+from dataclasses import dataclass
+from typing import Optional, Tuple
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+# 你已有 choose_K / gaussian_overlap_score / PoolLoss 等的话就复用
+# 这里给一个最小 PoolLoss 占位（如果你工程里已有就删掉这段）
+@dataclass
+class PoolLoss:
+    occ: torch.Tensor
+    rep: torch.Tensor
+    ent: torch.Tensor
+    collapse: torch.Tensor
+    total: torch.Tensor
+
+
+def _symm_jitter(S, jitter=1e-6):
+    S = 0.5 * (S + S.transpose(-1, -2))
+    I = torch.eye(3, device=S.device, dtype=S.dtype)
+    return S + jitter * I
+
+
+def gaussian_sigma_invariants(Sigma: torch.Tensor, eps: float = 1e-8):
+    """
+    Sigma: [..., 3, 3] (SPD-ish)
+    Return: [..., 6] invariants
+      [logdet, logtr, aniso_proxy, log_diag0, log_diag1, log_diag2]
+    用 Cholesky 求 logdet，避免 eigvalsh 不稳。
+    aniso 用对角 proxy（稳、便宜）。
+    """
+    Sigma = _symm_jitter(Sigma, jitter=1e-6)
+    L = torch.linalg.cholesky(Sigma)
+    logdet = 2.0 * torch.log(torch.diagonal(L, dim1=-2, dim2=-1).clamp_min(1e-12)).sum(dim=-1)
+    tr = torch.diagonal(Sigma, dim1=-2, dim2=-1).sum(dim=-1).clamp_min(eps)
+    logtr = torch.log(tr)
+
+    diag = torch.diagonal(Sigma, dim1=-2, dim2=-1).clamp_min(eps)
+    log_diag = torch.log(diag)                       # [...,3]
+    aniso = log_diag.max(dim=-1).values - log_diag.min(dim=-1).values
+
+    feat = torch.cat([logdet.unsqueeze(-1), logtr.unsqueeze(-1), aniso.unsqueeze(-1), log_diag], dim=-1)
+    return feat  # [...,6]
+
+
+def merge_gaussians_soft(mu, Sigma, A, mask=None, eps=1e-8, jitter=1e-6):
+    """
+    Moment matching:
+      mu_c = E[mu_i]
+      Sigma_c = E[Sigma_i] + Cov(mu_i)
+    """
+    if mask is not None:
+        A = A * mask.unsqueeze(-1)
+
+    denom = A.sum(dim=1, keepdim=True).clamp_min(eps)   # [B,1,K]
+    w = A / denom                                       # [B,N,K]
+    mu_c = torch.einsum("bnk,bnd->bkd", w, mu)          # [B,K,3]
+
+    intra = torch.einsum("bnk,bnij->bkij", w, Sigma)    # [B,K,3,3]
+    diff = mu.unsqueeze(2) - mu_c.unsqueeze(1)          # [B,N,K,3]
+    inter = torch.einsum("bnk,bnkd,bnke->bkde", w, diff, diff)  # [B,K,3,3]
+
+    Sigma_c = intra + inter
+    Sigma_c = 0.5 * (Sigma_c + Sigma_c.transpose(-1, -2))
+    I = torch.eye(3, device=Sigma_c.device, dtype=Sigma_c.dtype)
+    Sigma_c = Sigma_c + jitter * I
+    return mu_c, Sigma_c
+
+
+class LearnOnlyGaussianPoolingV2(nn.Module):
+    """
+    Learnable pooling with:
+      - semantic dot-product term (s vs slot_embed)
+      - spatial distance term (mu vs mu_slot)  [soft k-means / GMM-like]
+      - shape term (Sigma invariants vs geo_slot)
+      - weak slot identity bias (symmetry breaking)
+      - anti-collapse regularizer (column correlation of A)
+
+    Returns:
+      A: [B,N,K], s_c: [B,K,C], mu_c: [B,K,3], Sigma_c: [B,K,3,3], losses: PoolLoss
+    """
+
     def __init__(
         self,
         c_s: int,
         ratio: float = 12.0,
         k_max_cap: Optional[int] = None,
-        tau_init: float = 2.0,
+        tau_init: float = 1.0,
         slots_init_scale: float = 0.02,
-            geo_dim=8, gamma_init=0.5, eps=1e-8
+        eps: float = 1e-8,
+
+        # weights for logits terms
+        w_sem_init: float = 1.0,
+        w_mu_init: float = 1.0,
+        w_shape_init: float = 0.3,
+
+        # spatial kernel
+        sigma_mu_init: float = 1.0,   # in nm if mu is nm
+        learn_mu_sigma: bool = True,
+
+        # shape branch
+        geo_dim: int = 16,
+
+        # symmetry breaking (weak!)
+        id_bias_init: float = 0.02,   # small
+        learn_id_bias: bool = True,
+
+        # regularizers
+        w_occ: float = 1.0,
+        w_ent: float = 0.0,
+        w_collapse: float = 0.1,
     ):
         super().__init__()
         self.ratio = ratio
         self.k_max_cap = k_max_cap
         self.tau = tau_init
-        self.proj = nn.Linear(c_s, c_s)
+        self.eps = eps
+
+        self.w_occ = w_occ
+        self.w_ent = w_ent
+        self.w_collapse = w_collapse
+
+        # learnable weights to combine terms (you can schedule externally too)
+        self.w_sem = nn.Parameter(torch.tensor(float(w_sem_init)))
+        self.w_mu = nn.Parameter(torch.tensor(float(w_mu_init)))
+        self.w_shape = nn.Parameter(torch.tensor(float(w_shape_init)))
+
+        # semantic projection + slot prototypes
+        self.proj = nn.Linear(c_s, c_s, bias=False)
         self.slot_embed: Optional[nn.Parameter] = None
         self._slot_K: Optional[int] = None
         self._slots_init_scale = slots_init_scale
-        self.eps=eps
 
-        # ---------- 新增：几何分支 ----------
-        self.geo_dim = geo_dim
-        self.gamma = nn.Parameter(torch.tensor(float(gamma_init)))  # 可学习或你手动 schedule
+        # spatial prototypes: mu_slot
+        self.mu_slot: Optional[nn.Parameter] = None
 
-        # U: 把几何特征 g_i 投影到 geo_dim
-        self.geo_proj = nn.Linear(self._geo_feat_dim(), geo_dim, bias=True)
+        # sigma for spatial distances (log form)
+        if learn_mu_sigma and sigma_mu_init > 0:
+            self.log_sigma_mu = nn.Parameter(torch.log(torch.tensor(float(sigma_mu_init))))
+        else:
+            self.register_buffer("log_sigma_mu", torch.log(torch.tensor(float(max(sigma_mu_init, 1e-3)))))
 
-        # h_k: 每个 slot 的几何 prototype（不含坐标）
-        self.geo_slot = nn.Parameter(torch.randn(k_max_cap, geo_dim) * slots_init_scale)
-
-        # 可选：让几何 term 有更稳定尺度
+        # shape branch: Sigma invariants -> geo_dim, slot geo prototypes
+        self.geo_proj = nn.Linear(6, geo_dim, bias=True)
         self.geo_ln = nn.LayerNorm(geo_dim)
+        self.geo_slot: Optional[nn.Parameter] = None
 
+        # weak slot identity bias
+        if learn_id_bias:
+            self.id_bias: Optional[nn.Parameter] = None
+            self._id_bias_init = float(id_bias_init)
+        else:
+            self.id_bias = None
+            self.register_buffer("_fixed_id_bias", torch.tensor(float(id_bias_init)))
 
-
-    def _ensure_slots(self, K: int, C: int, device, dtype):
+    def _ensure_params(self, K: int, C: int, device, dtype):
+        # slot_embed
         if (self.slot_embed is None) or (self._slot_K != K) or (self.slot_embed.shape[-1] != C):
             self._slot_K = K
-            slots = torch.randn(K, C, device=device, dtype=dtype) * self._slots_init_scale
-            self.slot_embed = nn.Parameter(slots)
-    def _geo_feat_dim(self):
-        # 你要的特征：logdet, logtrace, aniso(=logλ1-logλ3), (logλ1,logλ2,logλ3)
-        # => 1 + 1 + 1 + 3 = 6
-        return 6
+            self.slot_embed = nn.Parameter(torch.randn(K, C, device=device, dtype=dtype) * self._slots_init_scale)
+
+        # mu_slot
+        if (self.mu_slot is None) or (self.mu_slot.shape[0] != K):
+            # init small random; you may prefer init from uniform anchors later
+            self.mu_slot = nn.Parameter(torch.randn(K, 3, device=device, dtype=dtype) * 0.5)
+
+        # geo_slot
+        if (self.geo_slot is None) or (self.geo_slot.shape[0] != K):
+            self.geo_slot = nn.Parameter(torch.randn(K, self.geo_proj.out_features, device=device, dtype=dtype) * self._slots_init_scale)
+
+        # id_bias
+        if self.id_bias is None:
+            # create if learnable
+            if isinstance(getattr(self, "_id_bias_init", None), float):
+                self.id_bias = nn.Parameter(torch.randn(K, device=device, dtype=dtype) * self._id_bias_init)
+
+    @staticmethod
+    def _choose_K(N: int, ratio: float, k_min: int = 1, k_max: Optional[int] = None):
+        K = max(k_min, int(math.ceil(N / max(ratio, 1e-6))))
+        if k_max is not None:
+            K = min(K, int(k_max))
+        return max(K, 1)
+
+    @staticmethod
+    def collapse_loss(A: torch.Tensor, mask: torch.Tensor, eps: float = 1e-8):
+        """
+        Penalize column similarity of A:
+          compute normalized occupancy vectors per slot, take Gram matrix,
+          penalize off-diagonal.
+        A: [B,N,K], mask: [B,N]
+        """
+        B, N, K = A.shape
+        # masked A
+        A = A * mask.unsqueeze(-1)
+        # occupancy vectors per slot: [B,N,K] -> [B,K,N]
+        X = A.transpose(1, 2)  # [B,K,N]
+        # normalize each slot vector
+        X = X / (X.norm(dim=-1, keepdim=True).clamp_min(eps))
+        # Gram: [B,K,K]
+        G = torch.einsum("bkn,bln->bkl", X, X)
+        eye = torch.eye(K, device=A.device, dtype=A.dtype).unsqueeze(0)
+        off = (G - eye)  # off-diagonals + maybe small diag noise
+        return (off * (1.0 - eye)).pow(2).mean()
+
     def forward(
         self,
         s: torch.Tensor,                 # [B,N,C]
-        mu: torch.Tensor,                # [B,N,3]
+        mu: torch.Tensor,                # [B,N,3] (nm)
         Sigma: torch.Tensor,             # [B,N,3,3]
         mask: Optional[torch.Tensor] = None,  # [B,N] {0,1}
-        w_occ: float = 1.0,
-        w_rep: float = 0.1,
-        w_ent: float = 0.0,
-        rep_topk: int = 4,
-        rep_margin: float = -1.0,
+        rep_topk: int = 4,               # (unused here; you can still add overlap repulsion if you want)
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, PoolLoss]:
+
         B, N, C = s.shape
         device, dtype = s.device, s.dtype
+
         if mask is None:
             mask = torch.ones(B, N, device=device, dtype=dtype)
+        else:
+            mask = mask.to(device=device, dtype=dtype)
 
-        K = choose_K(N, ratio=self.ratio, k_min=1, k_max=self.k_max_cap)
-        self._ensure_slots(K, C, device, dtype)
+        # choose K
+        K = self._choose_K(N, ratio=self.ratio, k_min=1, k_max=self.k_max_cap)
+        self._ensure_params(K, C, device, dtype)
 
+        # ---- (1) semantic logits ----
         s_proj = self.proj(s)  # [B,N,C]
         slots = self.slot_embed.unsqueeze(0).expand(B, -1, -1)  # [B,K,C]
-        logits_sem = torch.einsum("bnc,bkc->bnk", s_proj, slots) / max(self.tau, 1e-6)
+        logits_sem = torch.einsum("bnc,bkc->bnk", s_proj, slots) / max(float(self.tau), 1e-6)
 
-        # --------- (2) 几何 logits（平移不变） ----------
-        # g = gaussian_geo_features(Sigma, eps=self.eps)  # [B,N,6]
-        # g = self.geo_proj(g)  # [B,N,geo_dim]
-        # g = self.geo_ln(g)
-        #
-        # geo_slots = self.geo_slot[:K].unsqueeze(0).expand(B, -1, -1)  # [B,K,geo_dim]
-        # logits_geo = torch.einsum("bnd,bkd->bnk", g, geo_slots)  # [B,N,K]
+        # ---- (2) spatial logits (distance to mu_slot) ----
+        # mu_slot: [K,3] -> [1,1,K,3]
+        c_mu = self.mu_slot.unsqueeze(0).unsqueeze(0)           # [1,1,K,3]
+        dist2 = ((mu.unsqueeze(2) - c_mu) ** 2).sum(dim=-1)     # [B,N,K]
+        sigma2 = torch.exp(self.log_sigma_mu).clamp_min(1e-4) ** 2
+        logits_mu = -dist2 / (2.0 * sigma2)
 
-        #A.最快、最稳（我最推荐先用）：序列均匀anchor
+        # ---- (3) shape logits (Sigma invariants) ----
+        g = gaussian_sigma_invariants(Sigma, eps=self.eps)       # [B,N,6]
+        g = self.geo_ln(self.geo_proj(g))                        # [B,N,geo_dim]
+        geo_slots = self.geo_slot.unsqueeze(0).expand(B, -1, -1) # [B,K,geo_dim]
+        logits_shape = torch.einsum("bnd,bkd->bnk", g, geo_slots)
 
+        # ---- (4) weak slot identity bias (symmetry breaking) ----
+        if self.id_bias is not None:
+            idb = self.id_bias.view(1, 1, K)
+        else:
+            idb = getattr(self, "_fixed_id_bias", torch.tensor(0.0, device=device, dtype=dtype)).view(1, 1, 1)
 
-        #上面的效果不好 方案 B（可学习中心）：B 用“可学习 center”，但仍用距离而不是点积
-        # self.mu_slot = nn.Parameter(torch.randn(Kmax, 3) * 0.5)  # nm
-        # c = self.mu_slot[:K][None, None, :, :]  # [1,1,K,3]
-        # dist2 = ((mu[:, :, None, :] - c) ** 2).sum(-1)  # [B,N,K]
-        # logits_mu = -dist2 / (2 * sigma2)
+        # ---- combine logits ----
+        logits = (
+            self.w_sem * logits_sem +
+            self.w_mu * logits_mu +
+            self.w_shape * logits_shape +
+            idb
+        )
 
-        #FPS（再考虑优化）
-
-
-        # --------- (3) 合并 ----------
-        logits = logits_sem + self.gamma * logits_geo
-
-
-
-
+        # mask invalid residues
         logits = logits.masked_fill((mask < 0.5).unsqueeze(-1), -1e9)
-        A = F.softmax(logits, dim=-1)  # [B,N,K]
 
-        # # A: [B,N,K]
-        # print("A col std:", A.sum(dim=1).std(dim=-1).mean().item())  # slot占用差异
-        # print("A diff:", (A[:, :, 0] - A[:, :, 1]).abs().mean().item())  # 两列是否一样
-
+        A = torch.softmax(logits, dim=-1)          # [B,N,K]
         A = A * mask.unsqueeze(-1)
 
-        denom = A.sum(dim=1).clamp_min(1e-8)          # [B,K]
+        # ---- pooled semantic ----
+        denom = A.sum(dim=1).clamp_min(1e-8)       # [B,K]
         s_c = torch.einsum("bnk,bnc->bkc", A, s) / denom.unsqueeze(-1)
 
-        mu_c, Sigma_c = merge_gaussians_soft(mu, Sigma, A)
+        # ---- pooled gaussian (moment matching) ----
+        mu_c, Sigma_c = merge_gaussians_soft(mu, Sigma, A, mask=None, eps=self.eps, jitter=1e-6)
 
-        # occupancy
+        # ---- losses ----
+        # occupancy: encourage balanced usage
         occ = A.sum(dim=1)  # [B,K]
-        occ = occ / (occ.sum(dim=-1, keepdim=True).clamp_min(1e-8))
-        target = torch.full_like(occ, 1.0 / K)
+        occ = occ / occ.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+        target = torch.full_like(occ, 1.0 / max(K, 1))
         loss_occ = F.mse_loss(occ, target)
 
-        # repulsion
-        if K <= 1:
-            loss_rep = torch.zeros((), device=device, dtype=dtype)
-        else:
-            delta = mu_c.unsqueeze(2) - mu_c.unsqueeze(1)            # [B,K,K,3]
-            sigma_sum = Sigma_c.unsqueeze(2) + Sigma_c.unsqueeze(1)  # [B,K,K,3,3]
-            score = gaussian_overlap_score(delta, sigma_sum)         # [B,K,K]
-            eye = torch.eye(K, device=device, dtype=torch.bool).unsqueeze(0)
-            score = score.masked_fill(eye, -1e9)
-            top = torch.topk(score, k=min(rep_topk, K - 1), dim=-1).values
-            loss_rep = F.relu(top - rep_margin).mean()
-
-        # entropy
+        # entropy: optional (higher entropy = softer)
         ent = -(A.clamp_min(1e-8) * A.clamp_min(1e-8).log()).sum(dim=-1)  # [B,N]
         ent = (ent * mask).sum() / mask.sum().clamp_min(1.0)
-        loss_ent = ent
 
-        total = w_occ * loss_occ + w_rep * loss_rep + w_ent * loss_ent
-        losses = PoolLoss(occ=loss_occ, rep=loss_rep, ent=loss_ent, total=total)
+        # anti-collapse: penalize similar columns
+        loss_collapse = self.collapse_loss(A, mask, eps=self.eps)
 
+        total = self.w_occ * loss_occ + self.w_ent * ent + self.w_collapse * loss_collapse
+        losses = PoolLoss(
+            occ=loss_occ,
+            rep=torch.zeros((), device=device, dtype=dtype),
+            ent=ent,
+            collapse=loss_collapse,
+            total=total
+        )
 
         return A, s_c, mu_c, Sigma_c, losses
+
 
 
 @torch.no_grad()
@@ -231,6 +414,55 @@ def uniform_anchors(mask: torch.Tensor, K: int) -> torch.Tensor:
     return idx
 
 
+import torch
+
+
+@torch.no_grad()
+def uniform_anchors_Sem(N: int, K: int, mask: torch.Tensor) -> torch.Tensor:
+    """
+    序列均匀采样 anchor 索引（纯 Batch 矩阵化版本）。
+
+    Args:
+        N: 原始序列长度。
+        K: 需要采样的 anchor 数量。
+        mask: [B, N] (0/1 或 bool)，表示哪些位置是有效的。
+
+    Returns:
+        idx: [B, K] long, 采样得到的原始序列索引。
+    """
+    device = mask.device
+    B = mask.shape[0]
+    mask_bool = mask.to(dtype=torch.bool)
+
+    # 1. 计算每个 Batch 的有效长度
+    # clamp_min(1) 用于处理全无效的特殊情况，防止除以 0
+    lengths = mask_bool.sum(dim=1).to(dtype=torch.long).clamp_min(1)  # [B]
+
+    # 2. 生成均匀步长映射 [B, K]
+    # base 从 0 到 1 均匀分布
+    base = torch.linspace(0, 1, steps=K, device=device).view(1, K)  # [1, K]
+
+    # 映射到每个 batch 的有效索引范围 [0, lengths-1]
+    # 使用 round() 模拟你原代码中的 linspace 采样逻辑
+    pos_in_valid = (base * (lengths.view(B, 1) - 1).float()).round().long()  # [B, K]
+
+    # 3. 将有效索引“挤”到左侧
+    # 原理：对 (1 - mask) 进行稳定排序。
+    # valid 位置(0) 会排在前面，invalid 位置(1) 会排在后面
+    # stable=True 保证了 valid 位置内部的相对顺序不变
+    sort_key = (~mask_bool).to(torch.int16)
+    valid_indices_sorted = torch.argsort(sort_key, dim=1, stable=True)  # [B, N]
+
+    # 4. 根据计算出的相对位置 gather 原始索引
+    # pos_in_valid 对应的是在“所有有效点”里的第几个
+    # 比如某 batch 有 5 个有效点，pos 分布在 [0, 4]，从 sorted 前 5 位里取值
+    idx = torch.gather(valid_indices_sorted, 1, pos_in_valid)  # [B, K]
+
+    # 5. 处理全无效的情况（兜底逻辑）
+    # 如果某 batch 全为 0，lengths=1，pos_in_valid 全为 0，会取到原始索引 0
+    # 这与你原代码中“退化为 0..K-1”略有不同，但更符合采样逻辑且不报错。
+
+    return idx
 
 # 你已有：
 # - uniform_anchors(mask, K) -> idx [B,K]
@@ -390,7 +622,189 @@ class UniformAnchorSemGeoAssign(nn.Module):
         losses = PoolLoss(occ=loss_occ, rep=loss_rep, ent=loss_ent, total=total)
 
         return A, s_c, mu_c, Sigma_c, losses
+# -------------------------
+# 关键模块：UniformAnchorSemGeoAssign
+# -------------------------
+class UniformAnchorSemAssign(nn.Module):
+    """
+    稳定可训练的下采样 pooling：
+    - Anchor/window 只做破对称（限定竞争范围）
+    - 语义 logits 决定 A，所以不会固定比例（6/8/3/0 自然发生）
+    - 可选 mu-geo bias（建议先很小 or 先关）
+    """
 
+    def __init__(
+        self,
+        c_s: int,
+        ratio: float = 12.0,
+        k_max_cap: Optional[int] = None,
+
+        # 语义分支
+        tau_init: float = 0.2,
+        slots_init_scale: float = 0.02,
+
+        # window：每个 residue 只允许分给附近多少个 anchor
+        # 推荐：R=1~2（越大越接近全连接，越容易塌缩）
+        neighbor_R: int = 2,
+
+        # 几何分支（用 mu 距离更直接、更有结构信息）
+        use_mu_geo: bool = True,
+        sigma2_init: float = 0.25,   # nm^2，控制距离logits尺度
+        gamma_init: float = 0.0,     # 先 0；跑通后再慢慢加到 0.1~0.5
+
+        eps: float = 1e-8,
+    ):
+        super().__init__()
+        self.c_s = c_s
+        self.ratio = ratio
+        self.k_max_cap = k_max_cap
+
+        self.tau = tau_init
+        self.neighbor_R = neighbor_R
+        self.eps = eps
+
+        # semantic
+        self.proj = nn.Linear(c_s, c_s)
+        self.slot_embed: Optional[nn.Parameter] = None
+        self._slot_K: Optional[int] = None
+        self._slots_init_scale = slots_init_scale
+
+        # geo (mu)
+        self.use_mu_geo = use_mu_geo
+        self.log_sigma2 = nn.Parameter(torch.log(torch.tensor(float(sigma2_init))))
+        self.gamma = nn.Parameter(torch.tensor(float(gamma_init)))
+
+    def _ensure_slots(self, K: int, C: int, device, dtype):
+        if (self.slot_embed is None) or (self._slot_K != K) or (self.slot_embed.shape[-1] != C):
+            self._slot_K = K
+            slots = torch.randn(K, C, device=device, dtype=dtype) * self._slots_init_scale
+            self.slot_embed = nn.Parameter(slots)
+
+    @staticmethod
+    def _make_local_slot_mask_from_anchors(
+        N: int, K: int, anchor_idx: torch.Tensor, neighbor_R: int
+    ) -> torch.Tensor:
+        """
+        构造 local allow mask: [B,N,K] bool
+        对每个 residue i，只允许分配给“距离最近的 R 个 anchor slot”
+        """
+        B = anchor_idx.shape[0]
+        device = anchor_idx.device
+
+        i_idx = torch.arange(N, device=device)[None, :, None].expand(B, N, K)          # [B,N,K]
+        a_idx = anchor_idx[:, None, :].expand(B, N, K)                                  # [B,N,K]
+        dist = (i_idx - a_idx).abs()                                                    # [B,N,K]
+
+        # 取最近 R 个 slot
+        R = min(max(neighbor_R, 1), K)
+        top = torch.topk(dist, k=R, dim=-1, largest=False).indices                      # [B,N,R]
+
+        allow = torch.zeros((B, N, K), device=device, dtype=torch.bool)
+        allow.scatter_(dim=-1, index=top, value=True)
+        return allow
+
+    def forward(
+        self,
+        s: torch.Tensor,                 # [B,N,C]
+        mu: torch.Tensor,                # [B,N,3]
+        Sigma: torch.Tensor,             # [B,N,3,3]  (这里不强依赖，保留给 merge)
+        mask: Optional[torch.Tensor] = None,  # [B,N] {0,1}
+        w_occ: float = 1.0,
+        w_rep: float = 0.1,
+        w_ent: float = 0.0,
+        rep_topk: int = 4,
+        rep_margin: float = -1.0,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, PoolLoss, torch.Tensor]:
+        """
+        Returns:
+          A:      [B,N,K]
+          s_c:    [B,K,C]
+          mu_c:   [B,K,3]
+          Sigma_c:[B,K,3,3]
+          losses: PoolLoss
+          anchor_idx: [B,K]
+        """
+        B, N, C = s.shape
+        device, dtype = s.device, s.dtype
+        if mask is None:
+            mask = torch.ones((B, N), device=device, dtype=dtype)
+
+        # ---- choose K ----
+        K = choose_K(N, ratio=self.ratio, k_min=1, k_max=self.k_max_cap)
+        self._ensure_slots(K, C, device, dtype)
+
+        # ---- anchors + local window allow mask ----
+        anchor_idx = uniform_anchors( mask, K)                        # [B,K]
+        allow = self._make_local_slot_mask_from_anchors(N, K, anchor_idx, self.neighbor_R)  # [B,N,K]
+
+        # ---- semantic logits ----
+        s_proj = self.proj(s)                                           # [B,N,C]
+        slots = self.slot_embed.unsqueeze(0).expand(B, -1, -1)          # [B,K,C]
+        logits_sem = torch.einsum("bnc,bkc->bnk", s_proj, slots) / max(self.tau, 1e-6)
+
+        # ---- geo logits (mu-distance to anchor points) ----
+        if self.use_mu_geo:
+            # anchor_mu: [B,K,3]
+            anchor_mu = mu.gather(1, anchor_idx[..., None].expand(-1, -1, 3))
+            dist2 = ((mu[:, :, None, :] - anchor_mu[:, None, :, :]) ** 2).sum(dim=-1)  # [B,N,K]
+            sigma2 = torch.exp(self.log_sigma2).clamp_min(1e-6)
+            logits_geo = -dist2 / (2.0 * sigma2)
+        else:
+            logits_geo = torch.zeros((B, N, K), device=device, dtype=dtype)
+
+        # ---- combine + masks ----
+        logits = logits_sem + self.gamma * logits_geo
+
+        # 1) padding mask
+        logits = logits.masked_fill((mask < 0.5).unsqueeze(-1), -1e9)
+        # 2) local window mask（关键：破对称 + 稳定）
+        logits = logits.masked_fill(~allow, -1e9)
+
+        A = F.softmax(logits, dim=-1)                                   # [B,N,K]
+        A = A * mask.unsqueeze(-1)
+
+        # ---- aggregate s ----
+        denom = A.sum(dim=1).clamp_min(1e-8)                            # [B,K]
+        s_c = torch.einsum("bnk,bnc->bkc", A, s) / denom.unsqueeze(-1)
+
+        # ---- merge Gaussians (用你的实现) ----
+        # 你应当已有：mu_c, Sigma_c = merge_gaussians_soft(mu, Sigma, A)
+        mu_c, Sigma_c = merge_gaussians_soft(mu, Sigma, A)
+
+        # ---- losses ----
+        # occupancy：鼓励不要全挤一个，也不要平均死（建议用 MSE 到均匀分布，权重小一点）
+        occ = A.sum(dim=1)                                              # [B,K]
+        occ = occ / (occ.sum(dim=-1, keepdim=True).clamp_min(1e-8))
+        target = torch.full_like(occ, 1.0 / max(K, 1))
+        loss_occ = F.mse_loss(occ, target)
+
+        # repulsion：用你已有的 overlap score（建议用 log overlap，且只topk）
+        if K <= 1:
+            loss_rep = torch.zeros((), device=device, dtype=dtype)
+        else:
+            delta = mu_c.unsqueeze(2) - mu_c.unsqueeze(1)               # [B,K,K,3]
+            sigma_sum = Sigma_c.unsqueeze(2) + Sigma_c.unsqueeze(1)     # [B,K,K,3,3]
+
+            # 你如果有 fused_gaussian_overlap_score 就用它
+            # score 越接近 0 越重叠，越负越不重叠
+            score = fused_gaussian_overlap_score(delta, sigma_sum)      # [B,K,K]
+
+            eye = torch.eye(K, device=device, dtype=torch.bool).unsqueeze(0)
+            score = score.masked_fill(eye, -1e9)
+
+            top = torch.topk(score, k=min(rep_topk, K - 1), dim=-1).values
+            # 惩罚“太重叠”（score 接近 0）
+            loss_rep = F.relu(top - rep_margin).mean()
+
+        # entropy：早期可 0，后期开一点让 A 更“硬”
+        ent = -(A.clamp_min(1e-8) * A.clamp_min(1e-8).log()).sum(dim=-1) # [B,N]
+        ent = (ent * mask).sum() / mask.sum().clamp_min(1.0)
+        loss_ent = ent
+
+        total = w_occ * loss_occ + w_rep * loss_rep + w_ent * loss_ent
+        losses = PoolLoss(occ=loss_occ, rep=loss_rep, ent=loss_ent, total=total)
+
+        return A, s_c, mu_c, Sigma_c, losses, anchor_idx
 # =========================
 # 2) 打包：fine 后“下采样一切相关”模块
 # =========================
