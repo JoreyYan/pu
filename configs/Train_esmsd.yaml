@@ -56,7 +56,7 @@ experiment:
   save_val_samples: True
   task: fbb
   noise_scheme: Gaussianatoms
-  debug: False  # 关闭debug模式，启用多进程数据加载
+  debug: True  # 关闭debug模式，启用多进程数据加载
   seed: 123
   num_devices: 1
   warm_start:
@@ -94,13 +94,17 @@ experiment:
     w_nll: 0.0003              # NLL loss (已根据测试报告调整)
     # w_seq 使用上面的 type_loss_weight (0.01)
   wandb:
-    name: ${data.dataset}__HGF_geo_check_loss_anchor
+    name: ${data.dataset}__HGF_geo_check_loss_anchor_revisegassupdate_sem_caonly_igaonly_bottleneck
     project: se3-fm_sh
 #    id: tyzsnzu2  # Resume existing run
 #    resume: must  # Allow resuming if run exists
     notes: >
+      igaonly,stage2->bottleneck->4
+      igaonly,stage2->4
+      # just iga and final up , ca loss only
       loss_sep = valid_overlap.sum() /(denom* (denom + 1e-6))
-
+      修正 偏心高斯更新方式
+      
       To address the "hedgehog" artifacts and numerical instability, we revamped the Gaussian loss framework. The **SymmetricGaussianLoss** now incorporates a bidirectional Mahalanobis distance with a **Trace term**, enforcing strict parent-child alignment and eliminating orthogonal intersections. We balanced the loss scales using **log-barrier compression** to prevent the high-magnitude Child-View gradient from overwhelming the reconstruction MSE. For upsampling, we introduced **anisotropic repulsion** based on full covariance overlap and added a **learnable geometric bias** to the stochastic splitting process, effectively resolving mode collapse. Finally, the coarse-to-fine transition now utilizes **Gaussian Overlap KNN** to ensure topologically consistent parent selection.
       
 

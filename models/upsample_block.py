@@ -30,7 +30,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from models.pool import coarse_rigids_from_mu_sigma
-from models.IGA import InvariantGaussianAttention,CoarseIGATower,GaussianUpdateBlock,fused_gaussian_overlap_score
+from models.IGA import InvariantGaussianAttention,CoarseIGATower,GaussianUpdateBlock,fused_gaussian_overlap_score,FastTransformerTower
 from models.loss import HierarchicalGaussianLoss,SymmetricGaussianLoss
 # --------------------------
 # utilities: overlap score
@@ -534,13 +534,29 @@ class GaussianSplatGateUpInit(nn.Module):
         # 用 Cholesky 得到 L（你也可以用你已有的更稳定实现）
         eps = 1e-6
         I = torch.eye(3, device=device, dtype=dtype)
-        L = torch.linalg.cholesky(Sigma_p + eps * I)               # [B,Kp,3,3]
+        # L = torch.linalg.cholesky(Sigma_p + eps * I)               # [B,Kp,3,3]
+        #
+        # # mu0_{j,t} = mu_j + L_j xi
+        # mu0 = mu_p[:, :, None, :] + torch.einsum("bkae,bkme->bkma", L, xi_total)  # [B,Kp,M,3]
 
-        # mu0_{j,t} = mu_j + L_j xi
-        mu0 = mu_p[:, :, None, :] + torch.einsum("bkae,bkme->bkma", L, xi_total)  # [B,Kp,M,3]
+        # ---- robust sqrt-cov via eigh (sampling only) ----
+        S = 0.5 * (Sigma_p + Sigma_p.transpose(-1, -2))  # [B,Kp,3,3]
+        evals, evecs = torch.linalg.eigh(S)  # evals: [B,Kp,3], evecs: [B,Kp,3,3]
+
+        # clamp eigenvalues to make SPD
+        jitter = eps  # 你原本的 eps 或者更大一点如 1e-6/1e-5
+        evals = evals.clamp_min(jitter)
+
+        # build sqrt factor A = Q * sqrt(Λ)
+        sqrt_evals = torch.sqrt(evals)  # [B,Kp,3]
+        A = evecs * sqrt_evals.unsqueeze(-2)  # [B,Kp,3,3]  (each column scaled)
+
+        # mu0_{j,t} = mu_j + A_j xi
+        mu0 = mu_p[:, :, None, :] + torch.einsum("bkae,bkme->bkma", A, xi_total)  # [B,Kp,M,3]
 
         # Sigma0 收缩 + jitter
-        Sigma0 = (Sigma_p[:, :, None, :, :] / (self.phi ** 2)) + self.jitter * I  # [B,Kp,M,3,3]
+        Sigma_p = 0.5 * (Sigma_p + Sigma_p.transpose(-1, -2))
+        Sigma0 = (Sigma_p[:, :, None] / (self.phi ** 2)) + self.jitter * I
 
         # 展平候选
         mu0 = mu0.reshape(B, Kcand, 3)
@@ -827,3 +843,294 @@ class HierarchicalUpsampleIGAModule(nn.Module):
 
         return levels, reg_total
 
+import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class UpLoss(nn.Module):
+    # 你也可以用 dataclass，这里保持简单
+    pass
+
+
+class SemanticGateUpInit(nn.Module):
+    """
+    Pure semantic up-init:
+      parent: (s_l, mask_l) with Kp tokens
+      child candidates: Kcand = Kp * M_max
+      gate g in [0,1] controls expected active count
+
+    Returns:
+      s_child: [B, Kcand, C]
+      mask_child: [B, Kcand] (soft in [0,1])
+      losses: dict (count/sparse/total)
+      aux: dict
+    """
+    def __init__(
+        self,
+        c_s: int,
+        M_max: int = 8,
+        tau_init: float = 1.0,    # gate temperature: smaller -> harder
+        beta_init: float = 0.0,   # parent prior strength
+        c_out: int | None = None,
+        attn_heads: int = 4,      # optional cross-attn
+        use_cross_attn: bool = True,
+    ):
+        super().__init__()
+        self.c_s = c_s
+        self.M_max = int(M_max)
+        self.tau = float(tau_init)
+        self.beta = float(beta_init)
+        self.c_out = int(c_out) if c_out is not None else c_s
+        self.use_cross_attn = bool(use_cross_attn)
+
+        # parent prior a_j = softplus(u_j)
+        self.prior_mlp = nn.Sequential(
+            nn.LayerNorm(c_s),
+            nn.Linear(c_s, c_s),
+            nn.SiLU(),
+            nn.Linear(c_s, 1),
+        )
+
+        # candidate id embedding (t=0..M-1)
+        self.child_id_embed = nn.Embedding(self.M_max, c_s)
+
+        # gate logits: b_{j,t} from [s_j, e_t]
+        self.gate_mlp = nn.Sequential(
+            nn.LayerNorm(2 * c_s),
+            nn.Linear(2 * c_s, c_s),
+            nn.SiLU(),
+            nn.Linear(c_s, 1),
+        )
+
+        # semantic projection
+        self.sem_proj = nn.Linear(c_s, self.c_out)
+
+        # optional cross-attn: child queries attend to parent memory
+        self.attn_heads = int(attn_heads)
+        assert self.c_out % self.attn_heads == 0
+        d_head = self.c_out // self.attn_heads
+
+        self.q_proj = nn.Linear(self.c_out, self.c_out, bias=False)
+        self.k_proj = nn.Linear(self.c_out, self.c_out, bias=False)
+        self.v_proj = nn.Linear(self.c_out, self.c_out, bias=False)
+        self.out_proj = nn.Linear(self.c_out, self.c_out, bias=False)
+        self.d_head = d_head
+
+        self.ln = nn.LayerNorm(self.c_out)
+
+    @torch.no_grad()
+    def update_anneal(self, t: float):
+        """Optional schedule t in [0,1]."""
+        t = float(max(0.0, min(1.0, t)))
+        self.tau = 1.2 - 0.9 * t  # soft -> harder
+        self.beta = 0.0 + 1.0 * t # prior grows
+
+    def _cross_attn(self, q, k, v, mask_k):
+        """
+        q: [B,Q,C], k/v: [B,K,C], mask_k: [B,K]
+        """
+        B, Q, C = q.shape
+        K = k.shape[1]
+        H = self.attn_heads
+        d = self.d_head
+
+        qh = self.q_proj(q).view(B, Q, H, d).transpose(1, 2)  # [B,H,Q,d]
+        kh = self.k_proj(k).view(B, K, H, d).transpose(1, 2)  # [B,H,K,d]
+        vh = self.v_proj(v).view(B, K, H, d).transpose(1, 2)  # [B,H,K,d]
+
+        logits = torch.matmul(qh, kh.transpose(-1, -2)) / math.sqrt(d)  # [B,H,Q,K]
+        logits = logits + (mask_k[:, None, None, :] - 1.0) * 1e9
+
+        w = torch.softmax(logits, dim=-1)
+        out = torch.matmul(w, vh)  # [B,H,Q,d]
+        out = out.transpose(1, 2).contiguous().view(B, Q, C)
+        return self.out_proj(out)
+
+    def forward(
+        self,
+        s_l: torch.Tensor,      # [B,Kp,C]
+        mask_l: torch.Tensor,   # [B,Kp]
+        K_target: torch.Tensor | float | int | None = None,  # scalar or [B]
+        w_count: float = 1.0,
+        w_sparse: float = 0.0,
+        eps: float = 1e-6,
+    ):
+        B, Kp, C = s_l.shape
+        device, dtype = s_l.device, s_l.dtype
+        M = self.M_max
+        Kcand = Kp * M
+
+        # parent prior a_j > 0
+        a = F.softplus(self.prior_mlp(s_l).squeeze(-1)) * mask_l  # [B,Kp]
+
+        # candidate mapping: i = j*M + t
+        j0 = torch.arange(Kp, device=device)[None, :, None].expand(B, Kp, M).reshape(B, Kcand)
+        t0 = torch.arange(M, device=device)[None, None, :].expand(B, Kp, M).reshape(B, Kcand)
+
+        s_j = s_l.gather(1, j0[..., None].expand(-1, -1, C))  # [B,Kcand,C]
+        e_t = self.child_id_embed(t0)                          # [B,Kcand,C]
+
+        # gate logits
+        gate_in = torch.cat([s_j, e_t], dim=-1)                # [B,Kcand,2C]
+        b = self.gate_mlp(gate_in).squeeze(-1)                 # [B,Kcand]
+
+        # add parent prior term
+        a_i = a.gather(1, j0)                                  # [B,Kcand]
+        b = b + self.beta * torch.log(a_i + eps)
+
+        g = torch.sigmoid(b / max(self.tau, 1e-4))
+        g = g * mask_l.gather(1, j0)  # invalid parents -> 0
+
+        # count loss (budget)
+        if K_target is None:
+            loss_count = g.mean() * 0.0
+            K_target_b = None
+        else:
+            if not torch.is_tensor(K_target):
+                K_target = torch.tensor(float(K_target), device=device, dtype=dtype)
+            if K_target.ndim == 0:
+                K_target_b = K_target.expand(B)
+            else:
+                K_target_b = K_target
+            expK = g.sum(dim=1)
+            loss_count = (expK - K_target_b).pow(2).mean()
+
+        loss_sparse = g.mean()
+        losses = {
+            "count": loss_count,
+            "sparse": loss_sparse,
+            "total": w_count * loss_count + w_sparse * loss_sparse
+        }
+
+        # semantic init
+        s_child = self.sem_proj(s_j + e_t)  # [B,Kcand,C_out]
+
+        # optional cross-attn to inject global parent context
+        if self.use_cross_attn:
+            s_parent_proj = self.sem_proj(s_l)  # [B,Kp,C_out]
+            attn_out = self._cross_attn(s_child, s_parent_proj, s_parent_proj, mask_l)
+            s_child = self.ln(s_child + attn_out)
+
+        # apply soft mask
+        s_child = s_child * g.unsqueeze(-1)
+
+        aux = {
+            "a_prior": a,      # [B,Kp]
+            "g_gate": g,       # [B,Kcand]
+            "j0": j0,          # [B,Kcand]
+            "t0": t0,          # [B,Kcand]
+            "K_target": K_target_b,
+        }
+        return s_child, g, losses, aux
+
+class HierarchicalUpsampleSemanticModule(nn.Module):
+    """
+    Pure semantic up (variable length) with gates + transformer refine.
+    Drop-in compatible with previous up forward signature:
+      forward(s_l, r_l, mask_l, step, total_steps)
+    Here r_l is ignored (kept only for compatibility).
+    """
+    def __init__(
+        self,
+        c_s: int,
+        num_upsample: int = 2,
+        M_max: int = 8,
+        up_ratio: float = 6.0,
+        K_target: int | list[int] | None = None,
+        tower_layers: int | list[int] = 4,
+        tower_heads: int = 4,
+        use_cross_attn: bool = True,
+        tau_init: float = 1.0,
+        beta_init: float = 0.0,
+        mlp_ratio: float = 4.0,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.num_upsample = int(num_upsample)
+        self.up_ratio = float(up_ratio)
+
+        if isinstance(K_target, list):
+            assert len(K_target) == self.num_upsample
+            self.K_target_list = list(K_target)
+        else:
+            self.K_target_list = [K_target] * self.num_upsample
+
+        if isinstance(tower_layers, list):
+            assert len(tower_layers) == self.num_upsample
+            per_layers = list(tower_layers)
+        else:
+            per_layers = [int(tower_layers)] * self.num_upsample
+
+        self.up_inits = nn.ModuleList([
+            SemanticGateUpInit(
+                c_s=c_s,
+                M_max=M_max,
+                tau_init=tau_init,
+                beta_init=beta_init,
+                use_cross_attn=use_cross_attn,
+                attn_heads=tower_heads,
+                c_out=c_s,
+            )
+            for _ in range(self.num_upsample)
+        ])
+
+        # ✅ 用你已经写好的更快 tower
+        self.towers = nn.ModuleList([
+            FastTransformerTower(
+                c_s=c_s,
+                num_layers=per_layers[lv],
+                n_heads=tower_heads,
+                mlp_ratio=mlp_ratio,
+                dropout=dropout,
+            )
+            for lv in range(self.num_upsample)
+        ])
+
+    @torch.no_grad()
+    def _auto_K_target(self, mask_parent: torch.Tensor, up_ratio: float) -> int:
+        # batch mean active tokens
+        k_l = mask_parent.sum(dim=-1).float().mean()
+        return int(torch.round(k_l * up_ratio).clamp_min(1.0).item())
+
+    def forward(self, s_l, r_l, mask_l, step: int, total_steps: int):
+        # r_l ignored, kept for compatibility
+        levels = []
+        reg_total = torch.zeros((), device=s_l.device, dtype=s_l.dtype)
+
+        s, mask = s_l, mask_l
+        t = float(step) / max(int(total_steps), 1)
+
+        for lv in range(self.num_upsample):
+            self.up_inits[lv].update_anneal(t)
+
+            Kt = self.K_target_list[lv]
+            if Kt is None:
+                Kt = self._auto_K_target(mask, self.up_ratio)
+
+            s0, mask0, losses, aux = self.up_inits[lv](
+                s_l=s,
+                mask_l=mask,
+                K_target=Kt,
+                w_count=1.0,
+                w_sparse=0.0,
+            )
+            reg_total = reg_total + losses["total"]
+
+            # refine
+            s1 = self.towers[lv](s0, mask0)
+
+            levels.append({
+                "s0": s0,
+                "mask0": mask0,
+                "aux": aux,
+                "losses": losses,
+                "s": s1,
+                "mask": mask0,
+                "K_target": Kt,
+            })
+
+            s, mask = s1, mask0
+
+        return levels, reg_total

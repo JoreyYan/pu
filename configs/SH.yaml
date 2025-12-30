@@ -24,6 +24,7 @@ model:
   ipa:
     c_s: ${model.node_embed_size}
     c_z: ${model.edge_embed_size}
+    hgfc_z: ${model.edge_embed_size}
     c_hidden: 16
     no_heads: 8
     no_qk_points: 8
@@ -33,7 +34,7 @@ model:
     num_blocks: 6
   sidechain_atoms:
     hidden: ${model.node_embed_size}
-  num_downsample: 2
+  num_downsample: 1
 
 
 

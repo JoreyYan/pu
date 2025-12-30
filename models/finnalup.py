@@ -12,7 +12,85 @@ import torch.nn.functional as F
 
 from models.pool import coarse_rigids_from_mu_sigma
 from models.IGA import InvariantGaussianAttention,CoarseIGATower,GaussianUpdateBlock,fused_gaussian_overlap_score
+from chroma.layers.basic import FourierFeaturization
 
+
+class ResIdxFourierEmbedding(nn.Module):
+    """
+    res_idx -> continuous Fourier positional embedding
+
+    Inputs:
+      res_idx:   [B, N]  (int/long)
+      node_mask: [B, N]  (0/1 float or bool) 用来估计每条序列长度 L
+      chain_id:  [B, N]  optional (int/long) 多链区分（可选）
+
+    Output:
+      q0: [B, N, C]
+    """
+    def __init__(
+        self,
+        c_s: int,
+        scale: float = 1.0,
+        trainable: bool = False,
+        use_chain_emb: bool = False,
+        max_chain_id: int = 8,
+    ):
+        super().__init__()
+        self.c_s = int(c_s)
+        self.use_chain_emb = bool(use_chain_emb)
+
+        # FourierFeaturization 要求 d_model 是偶数
+        ff_dim = self.c_s if (self.c_s % 2 == 0) else (self.c_s + 1)
+        self.ff_dim = ff_dim
+
+        self.pos_ff = FourierFeaturization(
+            d_input=1,
+            d_model=ff_dim,
+            trainable=trainable,
+            scale=scale,
+        )
+
+        # 若 c_s 是奇数，做一个线性投影回 c_s
+        self.proj = nn.Identity() if ff_dim == self.c_s else nn.Linear(ff_dim, self.c_s, bias=False)
+
+        if self.use_chain_emb:
+            self.chain_emb = nn.Embedding(max_chain_id, self.c_s)
+
+        self.out_ln = nn.LayerNorm(self.c_s)
+
+    def forward(self, res_idx, node_mask, chain_id=None):
+        # res_idx: [B,N]
+        # node_mask: [B,N]
+        B, N = res_idx.shape
+        device = res_idx.device
+
+        # 1) 估计每条序列的有效长度 L（用 node_mask）
+        #    node_mask 允许 float/bool
+        if node_mask.dtype != torch.float32 and node_mask.dtype != torch.float16 and node_mask.dtype != torch.bfloat16:
+            m = node_mask.float()
+        else:
+            m = node_mask
+
+        L = m.sum(dim=1, keepdim=True).clamp_min(1.0)  # [B,1]
+
+        # 2) 把 res_idx 归一化到 [0,1]（关键！避免“序号很大/长度变化”导致频域错位）
+        denom = (L - 1.0).clamp_min(1.0)
+        pos = res_idx.float() / denom                      # [B,N]
+        pos = pos.clamp(0.0, 1.0).unsqueeze(-1)            # [B,N,1]
+
+        # 3) Fourier features
+        q0 = self.pos_ff(pos)                              # [B,N,ff_dim]
+        q0 = self.proj(q0)                                 # [B,N,C]
+
+        # 4) 可选：多链区分
+        if self.use_chain_emb:
+            assert chain_id is not None, "use_chain_emb=True requires chain_id"
+            q0 = q0 + self.chain_emb(chain_id.clamp_min(0).clamp_max(self.chain_emb.num_embeddings - 1))
+
+        # 5) mask + LN
+        q0 = q0 * m.unsqueeze(-1)                           # [B,N,C]
+        q0 = self.out_ln(q0)
+        return q0
 
 class FinalCoarseToFineIGAModule(nn.Module):
     """
@@ -35,12 +113,14 @@ class FinalCoarseToFineIGAModule(nn.Module):
         iga_conf,
         OffsetGaussianRigid_cls,
         num_refine_layers: int = 4,
-        neighbor_R: int = 2,          # R=1: 只看出生父；R>1: 加近邻父
+        neighbor_R: int = 1,          # R=1: 只看出生父；R>1: 加近邻父
         jitter: float = 1e-4,
         w_attach: float = 1.0,
         w_entB: float = 0.0,          # early=0, late可调大
         w_occ: float = 0.0,           # 可选
         enable_occ_loss: bool = False,
+    use_chain_emb: bool = False,
+        max_chain_id: int = 8,
     ):
         super().__init__()
         self.c_s = c_s
@@ -54,7 +134,17 @@ class FinalCoarseToFineIGAModule(nn.Module):
         self.enable_occ_loss = enable_occ_loss
 
         # residue index query embedding (实名 query)
-        self.res_idx_emb = nn.Embedding(4096, c_s)  # 足够大即可
+        # self.res_idx_emb = nn.Embedding(4096, c_s)  # 足够大即可
+
+        self.res_idx_emb = ResIdxFourierEmbedding(
+            c_s=c_s,
+            scale=1.0,  # 常用 0.5~2.0，可调
+            trainable=False,  # 建议先 False，稳定
+            use_chain_emb=use_chain_emb,
+            max_chain_id=max_chain_id,
+        )
+
+
         self.q_proj = nn.Linear(c_s, c_s, bias=False)
         self.k_proj = nn.Linear(c_s, c_s, bias=False)
         self.v_proj = nn.Linear(c_s, c_s, bias=False)
@@ -77,6 +167,7 @@ class FinalCoarseToFineIGAModule(nn.Module):
 
             gau_update=gau_update,
             c_s=c_s,
+            hgfc_z=iga_conf.hgfc_z,
             num_layers=num_refine_layers,
         )
 

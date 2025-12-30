@@ -4,11 +4,11 @@ import torch.nn.functional as F
 import math
 from typing import Optional, Sequence, Tuple
 from data import utils as du
-from models.pool import LearnOnlyGaussianPooling,coarse_rigids_from_mu_sigma,UniformAnchorSemGeoAssign
-from models.IGA import InvariantGaussianAttention,CoarseIGATower,GaussianUpdateBlock
+from models.pool import LearnOnlyGaussianPoolingV2,coarse_rigids_from_mu_sigma,UniformAnchorSemGeoAssign,UniformAnchorSemAssign
+from models.IGA import InvariantGaussianAttention,CoarseIGATower,GaussianUpdateBlock,FastTransformerTower
 from data.GaussianRigid import save_gaussian_as_pdb
 from models.loss import HierarchicalGaussianLoss,SymmetricGaussianLoss
-
+from models.EdgeCoarsen import CoarseEdgeCoarsenAndFuse
 class HierarchicalDownsampleIGAModule(nn.Module):
     """
     做 K 次:
@@ -29,7 +29,7 @@ class HierarchicalDownsampleIGAModule(nn.Module):
             num_downsample: int = 2,
             ratio: float = 6.0,
             k_max_cap: int = 64,
-            coarse_iga_layers: int | list[int] = 4,  # <--- 现在可配置
+            coarse_iga_layers: int | list[int] = 6,  # <--- 现在可配置
     ):
         super().__init__()
         self.num_downsample = num_downsample
@@ -44,26 +44,36 @@ class HierarchicalDownsampleIGAModule(nn.Module):
             per_level_layers = list(coarse_iga_layers)
 
         # pool per level
+        self.pools = nn.ModuleList([
+            LearnOnlyGaussianPoolingV2(
+                c_s=c_s, ratio=ratio, k_max_cap=k_max_cap,
+                tau_init=0.2, slots_init_scale=0.2,
+            )
+            for _ in range(num_downsample)
+        ])
+
         # self.pools = nn.ModuleList([
-        #     LearnOnlyGaussianPooling(
-        #         c_s=c_s, ratio=ratio, k_max_cap=k_max_cap,
-        #         tau_init=0.2, slots_init_scale=0.2,
+        #     UniformAnchorSemGeoAssign(
+        #         c_s=c_s,
+        #         ratio=ratio,
+        #         k_max_cap=k_max_cap,
+        #
+        #         # -------- 关键超参数（强烈建议这样起步） --------
+        #         sem_dim=128,  # 语义投影维度（稳定，不要太大）
+        #         w_geo_init=1.0,  # 几何主导（先保证不重叠）
+        #         w_sem_init=0.1,  # 语义弱绑定（防止 slot 对称）
+        #         sigma_nm_init=1.0,  # nm 级几何 soft 半径
+        #         tau_sem_init=1.0,  # 语义温度
         #     )
         #     for _ in range(num_downsample)
         # ])
 
-        self.pools = nn.ModuleList([
-            UniformAnchorSemGeoAssign(
-                c_s=c_s,
-                ratio=ratio,
-                k_max_cap=k_max_cap,
-
-                # -------- 关键超参数（强烈建议这样起步） --------
-                sem_dim=128,  # 语义投影维度（稳定，不要太大）
-                w_geo_init=1.0,  # 几何主导（先保证不重叠）
-                w_sem_init=0.1,  # 语义弱绑定（防止 slot 对称）
-                sigma_nm_init=1.0,  # nm 级几何 soft 半径
-                tau_sem_init=1.0,  # 语义温度
+        self.edge_fusers = nn.ModuleList([
+            CoarseEdgeCoarsenAndFuse(
+                c_z_in=getattr(iga_conf, "hgfc_z", 0),  # 你 IGA 用的 Cz
+                c_z_out=getattr(iga_conf, "hgfc_z", 0),  # 你 IGA 用的 Cz
+                # 这里填你类需要的其它配置，比如:
+                # geo_dim=..., sem_dim=..., fuse_dim=..., use_geo=True ...
             )
             for _ in range(num_downsample)
         ])
@@ -88,16 +98,17 @@ class HierarchicalDownsampleIGAModule(nn.Module):
                     iga=iga,
                     gau_update=gau_update,
                     c_s=c_s,
+                    hgfc_z=iga_conf.hgfc_z,
                     num_layers=per_level_layers[lv],  # <--- 每层不同
                 )
             )
 
         # 初始化 Loss 模块
-        self.hier_loss = HierarchicalGaussianLoss(w_sep=10.0, w_compact=1)  # compact 权重别太大
+        # self.hier_loss = HierarchicalGaussianLoss(w_sep=10.0, w_compact=1)  # compact 权重别太大
         # 实例化
        # self.parent_child_loss = SymmetricGaussianLoss(w_center_p=1.0, w_center_c=10.0, w_shape=0.0, eps=1e-6)
 
-    def forward(self, s_f, r_f, mask_f, step: int, total_steps: int):
+    def forward(self, s_f, z,r_f, mask_f, step: int, total_steps: int):
         """
         s_f: [B,N,C]
         r_f: OffsetGaussianRigid [B,N]
@@ -137,9 +148,9 @@ class HierarchicalDownsampleIGAModule(nn.Module):
             # 3) pooling
             A, s_c, mu_c, Sigma_c, pool_loss = self.pools[lv](
                 s=s, mu=mu, Sigma=Sigma, mask=mask,
-                w_occ=1.0,
-                w_rep=0.1,
-                w_ent=0.0 if t < 0.5 else 0.01,   # 你要的“早软后硬”
+                # w_occ=1.0,
+                # w_rep=0.1,
+                # w_ent=0.0 if t < 0.5 else 0.01,   # 你要的“早软后硬”
             )
 
             # --- 新增: 动态计算 mask_c ---
@@ -148,8 +159,8 @@ class HierarchicalDownsampleIGAModule(nn.Module):
             mask_c = (curr_occ > 1e-4).float()  # [B, K]
             # ---------------------------
             # 计算 Loss
-            geo_stats = self.hier_loss(mu_c, Sigma_c, mask_c)
-            pool_reg_total += geo_stats["total_hier"]
+            # geo_stats = self.hier_loss(mu_c, Sigma_c, mask_c)
+            # pool_reg_total += geo_stats["total_hier"]
 
             # 3. 计算父子一致性 Loss
             # pc_stats = self.parent_child_loss(
@@ -173,32 +184,201 @@ class HierarchicalDownsampleIGAModule(nn.Module):
             r_c = coarse_rigids_from_mu_sigma(
                 mu_c, Sigma_c, self.OffsetGaussianRigid_cls
             )
+            ang_rigids = r_c.scale_translation(10.0)  # 0.1
+
+            # pooling 得到 r_c / mask_c 后
+            save_gaussian_as_pdb(
+                gaussian_rigid=ang_rigids,
+                filename=f"debug_lv{lv}_r_cang_postpool_gaussian_mean_anchortrain.pdb",
+                mask=mask_c,
+                center_mode="gaussian_mean",
+            )
+
+            # ---- build z_c for this level ----
+            if z is not None and getattr(self, "edge_fusers", None) is not None:
+                z_c, Z_sem_c, Z_geo_c = self.edge_fusers[lv](
+                    A=A,Z_fine=z, r_c=r_c,
+                    mask_f=mask, mask_c=mask_c
+                )
+            else:
+                z_c = None
+
+            # 6) coarse IGA × (coarse_iga_layers)
+            s_c, r_c, z_c = self.coarse_towers[lv](s_c, r_c, mask_c,z=z_c)
+
             # ang_rigids = r_c.scale_translation(10.0)  # 0.1
             #
             # # pooling 得到 r_c / mask_c 后
             # save_gaussian_as_pdb(
             #     gaussian_rigid=ang_rigids,
-            #     filename=f"debug_lv{lv}_r_cang_postpool_gaussian_mean_anchor.pdb",
+            #     filename=f"debug_lv{lv}_r_cang_postpool_gaussian_mean_anchortrain_aftertowner.pdb",
             #     mask=mask_c,
             #     center_mode="gaussian_mean",
             # )
-
-
-
-            # 6) coarse IGA × (coarse_iga_layers)
-            s_c, r_c = self.coarse_towers[lv](s_c, r_c, mask_c)
 
 
             # 记录 level
             levels.append({
                 "A": A,
                 "s": s_c,
+                "z": z_c,
                 "r": r_c,
                 "mask": mask_c,
+                'curr_occ':curr_occ,
                 "pool_loss": pool_loss,
             })
 
             # 下一层输入
+            s,z, r, mask = s_c,z_c, r_c, mask_c
+
+        return levels, pool_reg_total
+
+class HierarchicalDownsampleModuleFast(nn.Module):
+    """
+    每层:
+      mu,Sigma <- r.get_gaussian_mean/cov   (如果你还保留椭圆)
+      A,s_c,mu_c,Sigma_c, pool_loss, anchor_idx = pool(...)
+      mask_c = occ>thr
+      (可选) r_c = coarse_rigids_from_mu_sigma(mu_c,Sigma_c)
+      tower:
+        - transformer: s_c <- Transformer(s_c)
+        - iga: (s_c,r_c) <- CoarseIGATower(s_c,r_c)
+
+    返回 levels, pool_reg_total
+    """
+
+    def __init__(
+        self,
+        c_s: int,
+        iga_conf,
+        OffsetGaussianRigid_cls,
+        num_downsample: int = 2,
+        ratio: float = 6.0,
+        k_max_cap: int = 64,
+        coarse_layers: int | list[int] = 6,
+
+        tower_mode: str = "transformer",  # "transformer" or "iga"
+        tf_heads: int = 8,
+        tf_mlp_ratio: float = 4.0,
+    ):
+        super().__init__()
+        assert tower_mode in ("transformer", "iga")
+        self.num_downsample = num_downsample
+        self.OffsetGaussianRigid_cls = OffsetGaussianRigid_cls
+        self.tower_mode = tower_mode
+
+        # per level layer count
+        if isinstance(coarse_layers, int):
+            per_level_layers = [coarse_layers] * num_downsample
+        else:
+            assert len(coarse_layers) == num_downsample
+            per_level_layers = list(coarse_layers)
+
+        # ---- pools ----
+        self.pools = nn.ModuleList([
+            UniformAnchorSemAssign(
+                c_s=c_s,
+                ratio=ratio,
+                k_max_cap=k_max_cap,
+                neighbor_R=6,
+                use_mu_geo=False,     # 可以先 True，但 gamma_init=0
+                gamma_init=0.0,      # 先语义跑通，再加
+                sigma2_init=0.25,
+                tau_init=0.2,
+                slots_init_scale=0.02,
+            )
+            for _ in range(num_downsample)
+        ])
+
+        # ---- towers ----
+        if tower_mode == "iga":
+            self.coarse_towers = nn.ModuleList()
+            for lv in range(num_downsample):
+                iga = InvariantGaussianAttention(
+                    c_s=c_s,
+                    c_z=getattr(iga_conf, "hgfc_z", 0),
+                    c_hidden=iga_conf.c_hidden,
+                    no_heads=iga_conf.no_heads,
+                    no_qk_gaussians=iga_conf.no_qk_points,
+                    no_v_points=iga_conf.no_v_points,
+                    layer_idx=1000 + lv,
+                    enable_vis=False,
+                )
+                gau_update = GaussianUpdateBlock(c_s)
+                self.coarse_towers.append(
+                    CoarseIGATower(
+                        iga=iga,
+                        gau_update=gau_update,
+                        c_s=c_s,
+                        num_layers=per_level_layers[lv],
+                    )
+                )
+        else:
+            self.tf_towers = nn.ModuleList([
+                FastTransformerTower(c_s=c_s, num_layers=per_level_layers[lv], n_heads=tf_heads, mlp_ratio=tf_mlp_ratio)
+                for lv in range(num_downsample)
+            ])
+
+        # 你的层内正则（可留着）
+        self.hier_loss = HierarchicalGaussianLoss(w_sep=10.0, w_compact=1.0)
+
+    def forward(self, s_f, r_f, mask_f, step: int, total_steps: int):
+        levels = []
+        pool_reg_total = 0.0
+
+        s, r, mask = s_f, r_f, mask_f
+
+        t = float(step) / max(int(total_steps), 1)
+
+        for lv in range(self.num_downsample):
+            # ---- schedule ----
+            # 语义温度退火（你之前写的OK）
+            self.pools[lv].tau = 0.8 - 0.5 * t
+
+            # ---- 取几何（如果你还保留 r）----
+            mu = r.get_gaussian_mean()     # [B,N,3]
+            Sigma = r.get_covariance()     # [B,N,3,3]
+
+            # ---- pooling ----
+            A, s_c, mu_c, Sigma_c, pool_loss, anchor_idx = self.pools[lv](
+                s=s, mu=mu, Sigma=Sigma, mask=mask,
+                w_occ=1.0,
+                w_rep=0.1,
+                w_ent=0.0 if t < 0.5 else 0.01,
+            )
+
+            # ---- mask_c from occ ----
+            occ = (A * mask.unsqueeze(-1)).sum(dim=1)        # [B,K]
+            mask_c = (occ > 1e-6).to(mask.dtype)             # [B,K]
+
+            # ---- hier loss（可选）----
+            geo_stats = self.hier_loss(mu_c, Sigma_c, mask_c)
+            pool_reg_total = pool_reg_total + geo_stats["total_hier"] + pool_loss.total
+
+            # ---- tower ----
+            if self.tower_mode == "iga":
+                r_c = coarse_rigids_from_mu_sigma(mu_c, Sigma_c, self.OffsetGaussianRigid_cls)
+                s_c, r_c = self.coarse_towers[lv](s_c, r_c, mask_c)
+            else:
+                # transformer 不需要 r_c
+                s_c = self.tf_towers[lv](s_c, mask_c)
+                # 但为了后续上采样你可能仍想保留 r_c（否则 up 用不了几何）
+                r_c = coarse_rigids_from_mu_sigma(mu_c, Sigma_c, self.OffsetGaussianRigid_cls)
+
+
+            levels.append({
+                "A": A,
+                "anchor_idx": anchor_idx,
+                "s": s_c,
+                "r": None,
+                "mu": mu_c,
+                "Sigma": Sigma_c,
+                "mask": mask_c,
+                "pool_loss": pool_loss,
+                "geo_stats": geo_stats,
+            })
+
+            # next level
             s, r, mask = s_c, r_c, mask_c
 
         return levels, pool_reg_total

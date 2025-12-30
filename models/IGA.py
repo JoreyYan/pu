@@ -818,7 +818,7 @@ class GaussianUpdateBlock(nn.Module):
     def __init__(self, c_s):
         super().__init__()
         # 输出 15 维增量
-        self.linear = Linear(c_s, 6, init="final")
+        self.linear = Linear(c_s, 12, init="final")
 
     def forward(self, s, gaussian_rigid, mask=None):
         """
@@ -838,7 +838,7 @@ class GaussianUpdateBlock(nn.Module):
         # 3. 更新几何体
         # 此时 Context 的 Offset/Scale 保持不变
         # Masked 的 Offset/Scale 发生演化
-        new_gaussian_rigid = gaussian_rigid.compose_update(updates)
+        new_gaussian_rigid = gaussian_rigid.compose_update_12D(updates)
 
         return new_gaussian_rigid
 
@@ -857,6 +857,7 @@ class CoarseIGABlock(nn.Module):
         self,
         iga: nn.Module,                      # InvariantGaussianAttention
         transition: nn.Module,               # StructureModuleTransition
+        edgetransition: nn.Module,
         gau_update: nn.Module,               # GaussianUpdateBlock
         c_s: int,
     ):
@@ -864,9 +865,10 @@ class CoarseIGABlock(nn.Module):
         self.iga = iga
         self.ln = nn.LayerNorm(c_s)
         self.transition = transition
+        self.edgetransition=edgetransition
         self.gau_update = gau_update
 
-    def forward(self, s, r, mask):
+    def forward(self, s, r, mask,z):
         """
         s: [B, K, C]
         r: OffsetGaussianRigid [B, K]
@@ -876,7 +878,7 @@ class CoarseIGABlock(nn.Module):
         # 1. IGA
         iga_out = self.iga(
             s=s,
-            z=None,        # <- 你说的路线 A：无 z
+            z=z,        # <- 你说的路线 A：无 z
             r=r,
             mask=mask,
         )
@@ -896,7 +898,9 @@ class CoarseIGABlock(nn.Module):
             mask=mask,     # coarse 一般全 1，也可以来自 pooling
         )
 
-        return s, r
+        z=self.edgetransition(s, z)
+
+        return s, r,z
 
 
 class CoarseIGATower(nn.Module):
@@ -910,6 +914,7 @@ class CoarseIGATower(nn.Module):
         iga: nn.Module,
         gau_update: nn.Module,
         c_s: int,
+            hgfc_z: int,
         num_layers: int,
     ):
         super().__init__()
@@ -917,16 +922,20 @@ class CoarseIGATower(nn.Module):
             CoarseIGABlock(
                 iga=iga,
                 transition=ipa_pytorch.StructureModuleTransition(c_s),
+                edgetransition=ipa_pytorch.EdgeTransition(
+                    node_embed_size=iga.c_s,
+                    edge_embed_in=hgfc_z,
+                    edge_embed_out=hgfc_z),
                 gau_update=gau_update,
                 c_s=c_s,
             )
             for _ in range(num_layers)
         ])
 
-    def forward(self, s, r, mask):
+    def forward(self, s, r, mask,z):
         for blk in self.blocks:
-            s, r = blk(s, r, mask)
-        return s, r
+            s, r,z = blk(s, r, mask,z)
+        return s, r,z
 
 
 class BottleneckIGAModule(nn.Module):
@@ -973,6 +982,7 @@ class BottleneckIGAModule(nn.Module):
             iga=iga,
             gau_update=gau_update,
             c_s=c_s,
+            hgfc_z=iga_conf.hgfc_z,
             num_layers=bottleneck_layers,
         )
 
@@ -982,11 +992,91 @@ class BottleneckIGAModule(nn.Module):
         #     num_layers=bottleneck_layers
         # )
 
-    def forward(self, s, r, mask):
+    def forward(self, s,z, r, mask):
         """
         s: [B,K,C]
         r: OffsetGaussianRigid [B,K]
         mask: [B,K]
         """
-        s_out, r_out = self.tower(s, r, mask)
-        return s_out, r_out
+        s_out, r_out,z_out = self.tower(s, r, mask,z)
+        return s_out, z_out,r_out
+
+class FastTransformerBlock(nn.Module):
+    """更快的 pre-norm Transformer block（不需要几何 r）"""
+    def __init__(self, c_s: int, n_heads: int = 8, mlp_ratio: float = 4.0, dropout: float = 0.0):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(c_s)
+        self.attn = nn.MultiheadAttention(embed_dim=c_s, num_heads=n_heads, dropout=dropout, batch_first=True)
+        self.ln2 = nn.LayerNorm(c_s)
+
+        hidden = int(c_s * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(c_s, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, c_s),
+        )
+
+    def forward(self, s: torch.Tensor, mask: torch.Tensor):
+        # s: [B,K,C], mask: [B,K] float(0/1)
+        key_padding_mask = (mask < 0.5)  # True means "ignore"
+        x = self.ln1(s)
+        attn_out, _ = self.attn(x, x, x, key_padding_mask=key_padding_mask, need_weights=False)
+        s = s + attn_out
+        s = s * mask[..., None]
+
+        x = self.ln2(s)
+        s = s + self.mlp(x)
+        s = s * mask[..., None]
+        return s
+
+
+class FastTransformerTower(nn.Module):
+    def __init__(self, c_s: int, num_layers: int, n_heads: int = 8, mlp_ratio: float = 4.0, dropout: float = 0.0):
+        super().__init__()
+        self.blocks = nn.ModuleList([
+            FastTransformerBlock(c_s=c_s, n_heads=n_heads, mlp_ratio=mlp_ratio, dropout=dropout)
+            for _ in range(num_layers)
+        ])
+
+    def forward(self, s: torch.Tensor, mask: torch.Tensor):
+        for blk in self.blocks:
+            s = blk(s, mask)
+        return s
+
+
+class BottleneckSemanticModule(nn.Module):
+    """
+    Pure semantic bottleneck (FAST):
+      in : s [B,K,C], r (ignored passthrough), mask [B,K]
+      out: s' [B,K,C], r passthrough
+
+    Uses your FastTransformerTower (MultiheadAttention + MLP).
+    """
+
+    def __init__(
+        self,
+        c_s: int,
+        bottleneck_layers: int = 6,
+        n_heads: int = 8,
+        mlp_ratio: float = 4.0,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.tower = FastTransformerTower(
+            c_s=c_s,
+            num_layers=bottleneck_layers,
+            n_heads=n_heads,
+            mlp_ratio=mlp_ratio,
+            dropout=dropout,
+        )
+        self.ln_out = nn.LayerNorm(c_s)
+
+    def forward(self, s: torch.Tensor, r, mask: torch.Tensor):
+        """
+        s:    [B,K,C]
+        r:    anything (passthrough)
+        mask: [B,K] float/bool
+        """
+        s = self.tower(s, mask)
+        s = self.ln_out(s) * mask[..., None]
+        return s, r

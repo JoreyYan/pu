@@ -88,26 +88,9 @@ class PoolLoss:
     occ: torch.Tensor
     rep: torch.Tensor
     ent: torch.Tensor
-    total: torch.Tensor
-
-
-import math
-from dataclasses import dataclass
-from typing import Optional, Tuple
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-# 你已有 choose_K / gaussian_overlap_score / PoolLoss 等的话就复用
-# 这里给一个最小 PoolLoss 占位（如果你工程里已有就删掉这段）
-@dataclass
-class PoolLoss:
-    occ: torch.Tensor
-    rep: torch.Tensor
-    ent: torch.Tensor
     collapse: torch.Tensor
     total: torch.Tensor
+
 
 
 def _symm_jitter(S, jitter=1e-6):
@@ -325,16 +308,21 @@ class LearnOnlyGaussianPoolingV2(nn.Module):
 
         # ---- (2) spatial logits (distance to mu_slot) ----
         # mu_slot: [K,3] -> [1,1,K,3]
-        c_mu = self.mu_slot.unsqueeze(0).unsqueeze(0)           # [1,1,K,3]
-        dist2 = ((mu.unsqueeze(2) - c_mu) ** 2).sum(dim=-1)     # [B,N,K]
+        # c_mu = self.mu_slot.unsqueeze(0).unsqueeze(0)           # [1,1,K,3]
+
+        idx = fps_anchors_mu(mu, mask, K)  # [B,K]
+        mu_anchor = mu.gather(1, idx[..., None].expand(B, K, 3))  # [B,K,3]
+        c_mu = mu_anchor.unsqueeze(1)  # [B,1,K,3]
+        dist2 = ((mu.unsqueeze(2) - c_mu) ** 2).sum(dim=-1)  # [B,N,K]
+
         sigma2 = torch.exp(self.log_sigma_mu).clamp_min(1e-4) ** 2
         logits_mu = -dist2 / (2.0 * sigma2)
 
-        # ---- (3) shape logits (Sigma invariants) ----
-        g = gaussian_sigma_invariants(Sigma, eps=self.eps)       # [B,N,6]
-        g = self.geo_ln(self.geo_proj(g))                        # [B,N,geo_dim]
-        geo_slots = self.geo_slot.unsqueeze(0).expand(B, -1, -1) # [B,K,geo_dim]
-        logits_shape = torch.einsum("bnd,bkd->bnk", g, geo_slots)
+        # # ---- (3) shape logits (Sigma invariants) ---- “局部形状相似 → 归属同一 domain” 没有生物物理意义
+        # g = gaussian_sigma_invariants(Sigma, eps=self.eps)       # [B,N,6]
+        # g = self.geo_ln(self.geo_proj(g))                        # [B,N,geo_dim]
+        # geo_slots = self.geo_slot.unsqueeze(0).expand(B, -1, -1) # [B,K,geo_dim]
+        # logits_shape = torch.einsum("bnd,bkd->bnk", g, geo_slots)
 
         # ---- (4) weak slot identity bias (symmetry breaking) ----
         if self.id_bias is not None:
@@ -345,9 +333,9 @@ class LearnOnlyGaussianPoolingV2(nn.Module):
         # ---- combine logits ----
         logits = (
             self.w_sem * logits_sem +
-            self.w_mu * logits_mu +
-            self.w_shape * logits_shape +
-            idb
+            self.w_mu * logits_mu +idb
+            # self.w_shape * logits_shape +
+
         )
 
         # mask invalid residues
@@ -463,13 +451,178 @@ def uniform_anchors_Sem(N: int, K: int, mask: torch.Tensor) -> torch.Tensor:
     # 这与你原代码中“退化为 0..K-1”略有不同，但更符合采样逻辑且不报错。
 
     return idx
+@torch.no_grad()
+def fps_anchors_mu(mu: torch.Tensor, mask: torch.Tensor, K: int) -> torch.Tensor:
+    """
+    更快的 FPS 实现：Batch 维度并行，矩阵化距离更新。
+    mu:   [B, N, 3]
+    mask: [B, N] (0/1 or bool)
+    K:    采样点数
+    """
+    B, N, _ = mu.shape
+    device = mu.device
+    mask_bool = mask.to(torch.bool)
 
+    # 1. 预计算：为了计算距离，无效点的距离初始化为无穷大
+    # 在计算 min_d2 时，我们希望 invalid 点永远不被选中
+    dist_inf = 1e10
+
+    # 结果容器
+    idx = torch.zeros(B, K, device=device, dtype=torch.long)
+
+    # 2. 确定第一个种子点 (Seed)
+    # 逻辑：距离 valid 均值最远的点
+    denom = mask_bool.sum(dim=1, keepdim=True).clamp_min(1)
+    mu_masked = mu * mask_bool.unsqueeze(-1)
+    mean = mu_masked.sum(dim=1, keepdim=True) / denom.unsqueeze(-1)  # [B, 1, 3]
+
+    d2_to_mean = torch.sum((mu - mean) ** 2, dim=-1)  # [B, N]
+    # 排除 invalid 点：将其距离设为极小值，确保 argmax 选不到它
+    d2_to_mean = d2_to_mean.masked_fill(~mask_bool, -1.0)
+
+    first_idx = torch.argmax(d2_to_mean, dim=-1)  # [B]
+    idx[:, 0] = first_idx
+
+    # 3. 初始化最小距离场 (min_d2)
+    # 存储每个点到当前已选集合的最小距离
+    # [B, 1, 3]
+    last_mu = torch.gather(mu, 1, first_idx.view(B, 1, 1).expand(-1, -1, 3))
+    min_d2 = torch.sum((mu - last_mu) ** 2, dim=-1)  # [B, N]
+
+    # 关键点：将 invalid 点的距离设为很小的值（如 -1），保证 argmax 选不到
+    # 同时在更新时，它们也不会影响有效点的距离场
+    min_d2 = min_d2.masked_fill(~mask_bool, -1.0)
+
+    # 4. 迭代采样 (必须保留 K 的循环，但内部全矩阵化)
+    #
+    for t in range(1, K):
+        # 选取当前距离场中最大的点
+        selected_idx = torch.argmax(min_d2, dim=-1)  # [B]
+        idx[:, t] = selected_idx
+
+        # 提取新选点的坐标 [B, 1, 3]
+        last_mu = torch.gather(mu, 1, selected_idx.view(B, 1, 1).expand(-1, -1, 3))
+
+        # 计算所有点到这个新选点的距离 [B, N]
+        new_d2 = torch.sum((mu - last_mu) ** 2, dim=-1)
+        new_d2 = new_d2.masked_fill(~mask_bool, -1.0)
+
+        # 更新全局最小距离场：取旧场和新距离的最小值
+        # 注意：因为 invalid 是 -1，这里的 minimum 会保留 -1
+        min_d2 = torch.where(min_d2 == -1.0, new_d2, torch.minimum(min_d2, new_d2))
+
+    return idx
 # 你已有：
 # - uniform_anchors(mask, K) -> idx [B,K]
 # - choose_K(N, ratio, k_min=1, k_max=...) -> int K
 # - merge_gaussians_soft(mu, Sigma, A) -> (mu_c, Sigma_c)
 # - gaussian_overlap_score(delta, sigma_sum) -> score  (或 fused_gaussian_overlap_score)
 # - PoolLoss dataclass/NamedTuple: PoolLoss(occ, rep, ent, total)
+
+
+import torch
+
+@torch.no_grad()
+def fps_points_batch(
+    x: torch.Tensor,                 # [B,P,3]
+    M: int,
+    mask: torch.Tensor | None = None,# [B,P] 1/0
+    init: str = "centroid_farthest", # "random" | "centroid_farthest"
+) -> torch.Tensor:
+    """
+    Batch-parallel Farthest Point Sampling (FPS).
+    Runs an O(M*P) loop (FPS is iterative) but fully parallel over batch on GPU.
+
+    Returns:
+      idx: [B,M] long
+    """
+    assert x.dim() == 3 and x.size(-1) == 3
+    B, P, _ = x.shape
+    device = x.device
+
+    if mask is None:
+        mask_bool = torch.ones((B, P), device=device, dtype=torch.bool)
+    else:
+        mask_bool = mask.to(device=device).to(torch.bool)
+
+    # if some batch has no valid points, fall back to all-valid to avoid crash
+    valid_cnt = mask_bool.sum(dim=1)  # [B]
+    all_invalid = (valid_cnt == 0)
+    if all_invalid.any():
+        mask_bool = mask_bool.clone()
+        mask_bool[all_invalid] = True
+        valid_cnt = mask_bool.sum(dim=1)
+
+    idx = torch.empty((B, M), device=device, dtype=torch.long)
+
+    # ---- init pick ----
+    if init == "random":
+        # sample a valid index per batch
+        # trick: add big negative to invalid, then argmax over random
+        r = torch.rand((B, P), device=device)
+        r = r.masked_fill(~mask_bool, -1.0)
+        idx0 = torch.argmax(r, dim=1)  # [B]
+    elif init == "centroid_farthest":
+        # pick farthest valid point from masked centroid (more stable)
+        w = mask_bool.to(x.dtype)
+        denom = w.sum(dim=1, keepdim=True).clamp_min(1.0)  # [B,1]
+        centroid = (x * w[..., None]).sum(dim=1) / denom   # [B,3]
+        d2 = ((x - centroid[:, None, :]) ** 2).sum(dim=-1) # [B,P]
+        d2 = d2.masked_fill(~mask_bool, -1.0)
+        idx0 = torch.argmax(d2, dim=1)
+    else:
+        raise ValueError(f"Unknown init={init}")
+
+    idx[:, 0] = idx0
+
+    # ---- running min distance to selected set ----
+    # dists: [B,P] stores min_{selected} ||x - x_sel||^2
+    sel = x.gather(1, idx0[:, None, None].expand(B, 1, 3)).squeeze(1)  # [B,3]
+    dists = ((x - sel[:, None, :]) ** 2).sum(dim=-1)                   # [B,P]
+    dists = dists.masked_fill(~mask_bool, -1.0)                        # invalid never chosen
+
+    for t in range(1, M):
+        far = torch.argmax(dists, dim=1)         # [B]
+        idx[:, t] = far
+
+        sel = x.gather(1, far[:, None, None].expand(B, 1, 3)).squeeze(1)
+        d2 = ((x - sel[:, None, :]) ** 2).sum(dim=-1)
+        # update min-dist
+        dists = torch.minimum(dists, d2)
+        dists = dists.masked_fill(~mask_bool, -1.0)
+
+    return idx
+
+@torch.no_grad()
+def sample_from_gaussian_mixture(mu_p, Sig_p, pi, M, mask_parent=None, eps=1e-6):
+    """
+    mu_p: [B,K,3]
+    Sig_p:[B,K,3,3]
+    pi:   [B,K] normalized
+    return:
+      parent_id: [B,M]
+      x:         [B,M,3]  samples
+      Sig_k:     [B,M,3,3] sampled parent's Sigma (for later Sigma0 init)
+    """
+    B, K, _ = mu_p.shape
+    device, dtype = mu_p.device, mu_p.dtype
+    I = torch.eye(3, device=device, dtype=dtype)[None, None]
+
+    if mask_parent is not None:
+        pi = pi * (mask_parent > 0.5).to(pi.dtype)
+        pi = pi / pi.sum(dim=-1, keepdim=True).clamp_min(1e-9)
+
+    parent_id = torch.multinomial(pi, num_samples=M, replacement=True)  # [B,M]
+
+    mu_k = mu_p.gather(1, parent_id[..., None].expand(B, M, 3))                 # [B,M,3]
+    Sig_k = Sig_p.gather(1, parent_id[..., None, None].expand(B, M, 3, 3))      # [B,M,3,3]
+    Sig_k = 0.5 * (Sig_k + Sig_k.transpose(-1, -2)) + eps * I
+
+    L = torch.linalg.cholesky(Sig_k)
+    z = torch.randn((B, M, 3), device=device, dtype=dtype)
+    x = mu_k + torch.einsum("bmij,bmj->bmi", L, z)
+
+    return parent_id, x, Sig_k
 
 class UniformAnchorSemGeoAssign(nn.Module):
     """
@@ -817,171 +970,6 @@ class DownsampleOut:
     pool_loss: PoolLoss
 
 
-class GaussianHierarchicalDownsampler(nn.Module):
-    """
-    ✅ 你要的：把 fine 之后所有下采样相关逻辑打包为一个类
-
-    输入（来自 fine trunk 结束）：
-      - s_f: [B,N,C]
-      - r_f: OffsetGaussianRigid [B,N]
-      - mask_f: [B,N]
-
-    输出：
-      - levels: List[DownsampleOut]  (每一次下采样后的 coarse)
-      - reg_total: 所有 pooling 正则的和（直接加到总 loss）
-    """
-
-    def __init__(
-        self,
-        c_s: int,
-        num_downsample: int = 2,
-        ratio: float = 12.0,
-        k_max_cap: Optional[int] = None,
-        tau_start: float = 2.0,
-        tau_end: float = 0.5,
-        # pooling loss weights (默认工程稳)
-        w_occ: float = 1.0,
-        w_rep: float = 0.1,
-        w_ent_start: float = 0.0,
-        w_ent_end: float = 0.01,
-        rep_topk: int = 4,
-        rep_margin: float = -1.0,
-        # Sigma->rigid
-        sigma_jitter: float = 1e-6,
-        var_floor: float = 1e-6,  # variance floor (nm^2)
-        empty_eps: float = 1e-6,
-    ):
-        super().__init__()
-        self.num_downsample = num_downsample
-        self.tau_start = tau_start
-        self.tau_end = tau_end
-        self.w_ent_start = w_ent_start
-        self.w_ent_end = w_ent_end
-
-        self.w_occ = w_occ
-        self.w_rep = w_rep
-        self.rep_topk = rep_topk
-        self.rep_margin = rep_margin
-
-        self.sigma_jitter = sigma_jitter
-        self.var_floor = var_floor
-        self.empty_eps = empty_eps
-
-        self.pools = nn.ModuleList([
-            LearnOnlyGaussianPooling(
-                c_s=c_s,
-                ratio=ratio,
-                k_max_cap=k_max_cap,
-                tau_init=tau_start,
-            )
-            for _ in range(num_downsample)
-        ])
-
-    @staticmethod
-    def _fix_rotation_matrix(R: torch.Tensor) -> torch.Tensor:
-        det = torch.det(R)
-        flip = (det < 0).to(R.dtype)[..., None, None]
-        R2 = R.clone()
-        R2[..., :, 2:3] = R2[..., :, 2:3] * (1.0 - 2.0 * flip)
-        return R2
-
-    def _coarse_rigids_from_mu_sigma(
-        self,
-        mu_c: torch.Tensor,     # [B,K,3]
-        Sigma_c: torch.Tensor,  # [B,K,3,3]
-    ) -> "OffsetGaussianRigid":
-        device, dtype = mu_c.device, mu_c.dtype
-
-        Sigma = 0.5 * (Sigma_c + Sigma_c.transpose(-1, -2))
-        I = torch.eye(3, device=device, dtype=dtype).view(1, 1, 3, 3)
-        Sigma = Sigma + self.sigma_jitter * I
-
-        evals, evecs = torch.linalg.eigh(Sigma)     # stable for 3x3
-        evals = evals.clamp_min(self.var_floor)
-        scaling = torch.sqrt(evals).clamp_min(1e-6)  # std (nm)
-
-        R = self._fix_rotation_matrix(evecs)
-
-        # 下面两行依赖你项目里的 Rotation / OffsetGaussianRigid
-        rots = Rotation(rot_mats=R)  # 如果你 Rotation 构造不是 rot_mats=，改这里即可
-        trans = mu_c
-        local_mean = torch.zeros_like(mu_c)
-        scaling_log = torch.log(scaling + 1e-6)
-
-        return OffsetGaussianRigid(
-            rots=rots,
-            trans=trans,
-            scaling_log=scaling_log,
-            local_mean=local_mean,
-        )
-
-    def _schedule(self, i: int, step: Optional[int], total_steps: Optional[int]) -> Tuple[float, float]:
-        """
-        返回 (tau, w_ent)；你不传 step/total_steps 就固定用起始值。
-        """
-        if (step is None) or (total_steps is None) or (total_steps <= 0):
-            return self.tau_start, self.w_ent_start
-
-        t = float(step) / float(max(total_steps, 1))
-        tau = self.tau_start + (self.tau_end - self.tau_start) * t
-        w_ent = self.w_ent_start + (self.w_ent_end - self.w_ent_start) * t
-        return tau, w_ent
-
-    def forward(
-        self,
-        s_f: torch.Tensor,                # [B,N,C]
-        r_f: "OffsetGaussianRigid",        # [B,N]
-        mask_f: torch.Tensor,             # [B,N]
-        step: Optional[int] = None,
-        total_steps: Optional[int] = None,
-    ) -> Tuple[List[DownsampleOut], torch.Tensor]:
-        """
-        Returns:
-          levels: list of DownsampleOut, length = num_downsample
-          reg_total: scalar tensor (sum of pool losses)
-        """
-        s = s_f
-        r = r_f
-        mask = mask_f
-
-        levels: List[DownsampleOut] = []
-        reg_total = torch.zeros((), device=s.device, dtype=s.dtype)
-
-        for i in range(self.num_downsample):
-            pool = self.pools[i]
-            tau, w_ent = self._schedule(i, step, total_steps)
-            pool.tau = float(tau)
-
-            mu = r.get_gaussian_mean()     # [B,N,3]
-            Sigma = r.get_covariance()     # [B,N,3,3]
-
-            A, s_c, mu_c, Sigma_c, pool_loss = pool(
-                s=s,
-                mu=mu,
-                Sigma=Sigma,
-                mask=mask,
-                w_occ=self.w_occ,
-                w_rep=self.w_rep,
-                w_ent=float(w_ent),
-                rep_topk=self.rep_topk,
-                rep_margin=self.rep_margin,
-            )
-
-            denom = A.sum(dim=1)  # [B,K]
-            mask_c = (denom > self.empty_eps).to(mask.dtype)
-            s_c = s_c * mask_c[..., None]
-
-            r_c = self._coarse_rigids_from_mu_sigma(mu_c, Sigma_c)
-
-            levels.append(DownsampleOut(
-                s=s_c, rigids=r_c, mask=mask_c, A=A, pool_loss=pool_loss
-            ))
-            reg_total = reg_total + pool_loss.total
-
-            # 下一层继续下采样（把 coarse 当 fine 用）
-            s, r, mask = s_c, r_c, mask_c
-
-        return levels, reg_total
 
 
 def _make_so3(R: torch.Tensor) -> torch.Tensor:
@@ -1020,9 +1008,10 @@ def coarse_rigids_from_mu_sigma(mu_c, Sigma_c, OffsetGaussianRigid_cls, eps=1e-6
     rots = du.Rotation(rot_mats=eye) if hasattr(du, "Rotation") else Rotation(rot_mats=eye)  # 兼容你的 Rotation 定义
 
     # 2) scaling = sqrt(diag(Sigma))
-    diag = torch.diagonal(Sigma_c, dim1=-2, dim2=-1)  # [B,K,3]
-    scaling = torch.sqrt(torch.clamp(diag, min=eps))
-    scaling_log = torch.log(scaling + eps)
+    tr = torch.diagonal(Sigma_c, dim1=-2, dim2=-1)  # [B,K,3]
+    var = (tr / 3.0).clamp_min(eps)
+    scale = torch.sqrt(var)  # [B,K]
+    scaling_log = torch.log(scale)
 
     # 3) local_mean = 0 (因为 trans 就是 mu)
     local_mean = torch.zeros_like(mu_c)

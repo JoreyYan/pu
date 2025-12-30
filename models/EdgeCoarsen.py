@@ -75,20 +75,21 @@ class CoarseEdgeCoarsenAndFuse(nn.Module):
         """
         Z_sem_c = (A^T Z A) / (A^T 1 A)
         A: [B,N,K], Z: [B,N,N,Cz]
+        return: [B,K,K,Cz]
         """
         if mask_f is not None:
-            A = A * mask_f.unsqueeze(-1)
-            # mask Z
-            m2 = mask_f[:, :, None] * mask_f[:, None, :]
+            A = A * mask_f.unsqueeze(-1)  # [B,N,K]
+            m2 = mask_f[:, :, None] * mask_f[:, None, :]  # [B,N,N]
             Z = Z * m2.unsqueeze(-1)
 
         # numerator: [B,K,K,Cz]
-        Z_num = torch.einsum("bna,bmj,bnmz->bamz", A, A, Z)
+        Z_num = torch.einsum("bik,bijc,bjl->bklc", A, Z, A)
+
         # denom: [B,K,K]
-        ones = torch.ones_like(Z[..., 0])
-        Z_den = torch.einsum("bna,bmj,bnm->bam", A, A, ones).clamp_min(self.eps)
-        Z_sem_c = Z_num / Z_den.unsqueeze(-1)
-        return Z_sem_c
+        ones = torch.ones_like(Z[..., 0])  # [B,N,N]
+        Z_den = torch.einsum("bik,bij,bjl->bkl", A, ones, A).clamp_min(self.eps)
+
+        return Z_num / Z_den.unsqueeze(-1)
 
     def geo_from_rc(self, r_c, mask_c=None):
         """

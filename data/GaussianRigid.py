@@ -25,7 +25,7 @@ class OffsetGaussianRigid(Rigid):
         _local_mean (Tensor): 侧链质心在局部坐标系下的位置 (Offset)
     """
 
-    def __init__(self, rots, trans,  scaling_log, local_mean, normalize_quats=True): #local_quat,
+    def __init__(self, rots, trans,  scaling_log, local_mean,  chol=None,normalize_quats=True): #local_quat,
         """
         Args:
             rots: Backbone Rotation
@@ -45,6 +45,7 @@ class OffsetGaussianRigid(Rigid):
         # self._local_quat = local_quat
         self._scaling_log = scaling_log
         self._local_mean = local_mean
+        self._chol = chol  # [...,3,3] or None
 
     @property
     def scaling(self):
@@ -73,15 +74,19 @@ class OffsetGaussianRigid(Rigid):
 
         R = self.get_rots().get_rot_mats()
 
-        # [B, N, 3]
-        s = self.scaling
+        if self._chol is None:
+            # [B, N, 3]
+            s = self.scaling
 
-        # 1. 防止 s 过于微小导致下溢 (虽然 exp 保证正，但可能极小)
-        # 这一步保证了 S^2 是“足够正”的
-        s = torch.clamp(s, min=1e-6)
+            # 1. 防止 s 过于微小导致下溢 (虽然 exp 保证正，但可能极小)
+            # 这一步保证了 S^2 是“足够正”的
+            s = torch.clamp(s, min=1e-6)
 
-        # 构造对角方差矩阵 S^2
-        S_squared = torch.diag_embed(s * s)
+            # 构造对角方差矩阵 S^2
+            S_squared = torch.diag_embed(s * s)
+        else:
+            L = torch.tril(self._chol)
+            S_squared = L @ L.transpose(-1, -2)
 
         # 旋转协方差
         # Sigma = R * S^2 * R^T
@@ -218,6 +223,46 @@ class OffsetGaussianRigid(Rigid):
             new_local_mean,
 
             # normalize_quats=False  # 前面已经 normalize 过了，这里 False 即可
+        )
+
+    def compose_update_12D(self, update_vec: torch.Tensor, update_mask: torch.Tensor = None):
+        """
+        update_vec:
+          - 6D : rigid (qvec3 + t3)
+          - 12D: rigid (0:6) + local_mean(6:9) + log_scale(9:12)
+        """
+        D = update_vec.shape[-1]
+        if D not in (6, 12):
+            raise ValueError(f"Expect 6 or 12 dims, got {D}")
+
+        # (1) 全局 R,t
+        bb_update = update_vec[..., :6]
+        new_rigid = super().compose_q_update_vec(bb_update, update_mask=update_mask)
+
+        # 默认保持
+        new_local_mean = self._local_mean
+        new_scaling_log = self._scaling_log
+
+        if D == 12:
+            d_mean = update_vec[..., 6:9]
+            d_log = update_vec[..., 9:12]
+
+            if update_mask is not None:
+                d_mean = d_mean * update_mask[..., None]
+                d_log = d_log * update_mask[..., None]
+
+            new_local_mean = new_local_mean + d_mean
+
+            # log-scale：加法更新 + clamp（非常重要）
+            new_scaling_log = (new_scaling_log + d_log)
+            LOG_MIN, LOG_MAX = -6.0, 3.0
+            new_scaling_log = new_scaling_log.clamp(LOG_MIN, LOG_MAX)
+
+        return OffsetGaussianRigid(
+            new_rigid._rots,
+            new_rigid._trans,
+            new_scaling_log,
+            new_local_mean,
         )
 
     @staticmethod

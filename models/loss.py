@@ -632,6 +632,7 @@ class BackboneGaussianAutoEncoderLoss(nn.Module):
     def __init__(
         self,
         w_mse: float = 1.0,
+            w_ca_trans: float = 1.0,
         w_pair_intra: float = 0.5,  # [原有] 局部刚体几何 (Residue内部)
         w_pair_global: float = 1.0,  # [新增] 全局拓扑 (DRMSD, 所有 CA-CA 距离)
         w_gauss_nll: float = 0.0,   # 建议先 0，等坐标能降再开
@@ -641,6 +642,7 @@ class BackboneGaussianAutoEncoderLoss(nn.Module):
     ):
         super().__init__()
         self.w_mse = w_mse
+        self.w_ca_trans=w_ca_trans
         self.w_pair_intra = w_pair_intra
         self.w_pair_global = w_pair_global  # 新增权重
         self.w_gauss_nll = w_gauss_nll
@@ -750,27 +752,55 @@ class BackboneGaussianAutoEncoderLoss(nn.Module):
                 gauss_nll = (nll * m_res[..., None]).sum() / (denom * 4.0)
 
         # ---------- (4) reg_total ----------
-        reg = outs.get("reg_total", torch.tensor(0.0, device=pred.device))
-        if not torch.is_tensor(reg):
-            reg = torch.tensor(float(reg), device=pred.device)
+        # reg = outs.get("reg_total", torch.tensor(0.0, device=pred.device))
+        # if not torch.is_tensor(reg):
+        #     reg = torch.tensor(float(reg), device=pred.device)
+
+        # ---------------------------------------------------------
+        # (NEW) CA Translation Loss (对齐 final_gaussian 的 trans)
+        # ---------------------------------------------------------
+        bb_ca_trans = torch.tensor(0.0, device=pred.device)
+
+        if self.w_ca_trans > 0.0:
+            assert "final_gaussian" in outs, "outs 需要包含 final_gaussian (r_res)"
+            r = outs["final_gaussian"]
+
+            # 1) pred trans: [B,N,3]  (按你类的 API，优先 get_trans)
+            if hasattr(r, "get_trans"):
+                pred_trans = r.get_trans()
+            elif hasattr(r, "trans"):
+                pred_trans = r.trans
+            elif hasattr(r, "_trans"):
+                pred_trans = r._trans
+            else:
+                raise AttributeError("final_gaussian 没有 get_trans()/trans/_trans, 请确认 OffsetGaussianRigid 的接口")
+
+            # 2) GT CA: 你已经有了
+            # gt_ca = gt[..., 1, :]   # [B,N,3]
+
+            # 3) masked MSE (单位保持一致：你 pred/gt 都是 Å 才行)
+            err = (pred_trans - gt_ca) * m_res.unsqueeze(-1)  # [B,N,3]
+            bb_ca_trans = (err.square().sum(dim=-1).sum()) / (denom * 3.0)
 
         loss = (
-            self.w_mse * bb_mse +
-            self.w_pair_intra * bb_pair_intra +
-            self.w_pair_global * bb_pair_global +  # 加入全局项
-            self.w_gauss_nll * gauss_nll +
-            self.w_mu_anchor * mu_anchor +
-            self.w_reg * reg
+            # self.w_mse * bb_mse +
+            # self.w_pair_intra * bb_pair_intra +
+            # self.w_pair_global * bb_pair_global +  # 加入全局项
+            # self.w_gauss_nll * gauss_nll +
+            # self.w_mu_anchor * mu_anchor +
+            self.w_ca_trans *bb_ca_trans
+            # self.w_reg * reg
         )
 
         return {
             "loss": loss,
             "bb_mse": bb_mse.detach(),
+            "ca_mse": bb_ca_trans.detach(),
             "bb_pair_intra": bb_pair_intra.detach(),
             "bb_pair_global": bb_pair_global.detach(), # 监控这个指标
             "gauss_nll": gauss_nll.detach(),
             "mu_anchor": mu_anchor.detach(),
-            "reg_total": reg.detach(),
+            # "reg_total": reg.detach(),
         }
 
 

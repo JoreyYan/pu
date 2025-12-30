@@ -23,7 +23,7 @@ from models.features.backbone_gnn_feature import BackboneEncoderGNN
 from models import ipa_pytorch
 from models.shattetnion.ShDecoderSidechain import SideAtomsFeatureHead, SequenceHead
 from openfold.model.primitives import Linear
-
+from openfold.utils.rigid_utils import Rigid,Rotation
 from data.GaussianRigid import OffsetGaussianRigid
 
 from models.components.frozen_esm import FrozenEsmModel
@@ -33,10 +33,13 @@ from models.IGA import (
     InvariantGaussianAttention,
     GaussianUpdateBlock,
     BottleneckIGAModule,
+FastTransformerBlock,
+BottleneckSemanticModule
 )
-from models.downblock import HierarchicalDownsampleIGAModule
-from models.upsample_block import HierarchicalUpsampleIGAModule
+from models.downblock import HierarchicalDownsampleIGAModule,HierarchicalDownsampleModuleFast
+from models.upsample_block import HierarchicalUpsampleIGAModule,HierarchicalUpsampleSemanticModule
 from models.finnalup import FinalCoarseToFineIGAModule
+from models.FinalSemUp import FinalCoarseToFineSemanticUpModule
 
 
 # ============================================================
@@ -112,6 +115,7 @@ class HierarchicalGaussianFieldModel(nn.Module):
         self.feature_graph = BackboneEncoderGNN(dim_nodes=self.ipa.c_s)
 
         self.use_side=False
+        self.SEM_only = False
 
         if  self.use_side:
 
@@ -194,38 +198,85 @@ class HierarchicalGaussianFieldModel(nn.Module):
             self.trunk[f'post_tfmr_{b}'] = Linear(tfmr_in, self.ipa.c_s, init="final")
             # Transition
             self.trunk[f'node_transition_{b}'] = ipa_pytorch.StructureModuleTransition(c=self.ipa.c_s)
-            if b < self.ipa.num_blocks - 1:
-                # No edge update on the last block.
-                edge_in = self.conf.edge_embed_size
-                self.trunk[f'edge_transition_{b}'] = ipa_pytorch.EdgeTransition(
-                    node_embed_size=self.ipa.c_s,
-                    edge_embed_in=edge_in,
-                    edge_embed_out=self.conf.edge_embed_size,
-                )
+
+
+            edge_in = self.conf.edge_embed_size
+            self.trunk[f'edge_transition_{b}'] = ipa_pytorch.EdgeTransition(
+                node_embed_size=self.ipa.c_s,
+                edge_embed_in=edge_in,
+                edge_embed_out=self.conf.edge_embed_size,
+            )
             self.trunk[f"gau_update_{b}"] = GaussianUpdateBlock(self.ipa.c_s)
 
         # ========== Stage 3: HGF ==========
-        self.down = HierarchicalDownsampleIGAModule(
-            c_s=self.ipa.c_s,
-            iga_conf=self.ipa,
-            num_downsample=self.conf.num_downsample,
-            OffsetGaussianRigid_cls=OffsetGaussianRigid,
-        )
-        self.bottleneck = BottleneckIGAModule(
-            c_s=self.ipa.c_s,
-            iga_conf=self.ipa,
-        )
-        self.up = HierarchicalUpsampleIGAModule(
-            c_s=self.ipa.c_s,
-            iga_conf=self.ipa,
-            num_upsample=self.conf.num_downsample-1,
-            OffsetGaussianRigid_cls=OffsetGaussianRigid,
-        )
-        self.final_up = FinalCoarseToFineIGAModule(
-            c_s=self.ipa.c_s,
-            iga_conf=self.ipa,
-            OffsetGaussianRigid_cls=OffsetGaussianRigid,
-        )
+        if not self.SEM_only:
+            self.down = HierarchicalDownsampleIGAModule(
+                c_s=self.ipa.c_s,
+                iga_conf=self.ipa,
+                num_downsample=self.conf.num_downsample,
+                OffsetGaussianRigid_cls=OffsetGaussianRigid,
+            )
+            self.bottleneck = BottleneckIGAModule(
+                c_s=self.ipa.c_s,
+                iga_conf=self.ipa,
+            )
+
+
+            self.up = HierarchicalUpsampleIGAModule(
+                c_s=self.ipa.c_s,
+                iga_conf=self.ipa,
+                num_upsample=self.conf.num_downsample-1,
+                OffsetGaussianRigid_cls=OffsetGaussianRigid,
+            )
+
+
+            self.final_up = FinalCoarseToFineIGAModule(
+                c_s=self.ipa.c_s,
+                iga_conf=self.ipa,
+                OffsetGaussianRigid_cls=OffsetGaussianRigid,
+            )
+
+        else:
+            ####sem
+
+            # self.down = HierarchicalDownsampleModuleFast(
+            #     c_s=self.ipa.c_s,
+            #     iga_conf=self.ipa,
+            #     num_downsample=self.conf.num_downsample,
+            #     OffsetGaussianRigid_cls=OffsetGaussianRigid,
+            # )
+            #
+            # self.bottleneck = BottleneckSemanticModule(
+            #     c_s=self.ipa.c_s,
+            #     bottleneck_layers=6,
+            #     n_heads=self.ipa.no_heads ,
+            #     mlp_ratio=4.0,
+            #     dropout=0.0,
+            # )
+            # self.up = HierarchicalUpsampleSemanticModule(
+            #     c_s=self.ipa.c_s,
+            #     num_upsample=self.conf.num_downsample - 1,
+            #     M_max=8,
+            #     up_ratio=6.0,  # Kt = active_parent * 6（期望）
+            #     K_target=None,  # None => 用 up_ratio 自动预算
+            #     tower_layers=4,  # 先小后大都行：也支持 list
+            #     tower_heads=4,
+            #     use_cross_attn=True,  # 你这套里 cross-attn 是 up-init 内部那一下
+            #     tau_init=1.0,
+            #     beta_init=0.0,
+            #     mlp_ratio=4.0,
+            #     dropout=0.0,
+            # )
+
+            self.final_up = FinalCoarseToFineSemanticUpModule(
+                conf=self.ipa,
+                c_s=self.ipa.c_s,
+                OffsetGaussianRigid_cls=OffsetGaussianRigid,
+                RotationCls=Rotation,  # 你工程里 Rotation 类
+                num_tf_layers=6,  # 语义 refine
+                neighbor_R=3,  # 每个 residue top2 coarse 父
+                use_chain_emb=False,  # 你有 chain_id 再开
+            )
 
         # ========== Stage 4: Heads ==========
         self.seq_head = SequenceHead(self.ipa.c_s, self.ipa.c_s, num_classes=21)
@@ -254,18 +305,18 @@ class HierarchicalGaussianFieldModel(nn.Module):
         rigids_nm, thickness_nm = self.forward_stage1_geometry(input_feats)
 
         # Stage 2
-        node_embed, rigids_nm = self.forward_stage2_trunk(
+        node_embed,edge_embed, rigids_nm = self.forward_stage2_trunk(
             node_embed, edge_embed, rigids_nm, node_mask, edge_mask,input_feats
         )
 
         # Stage 3
         s_res, r_res, reg_hgf = self.forward_stage3_hgf(
-            node_embed, rigids_nm, node_mask, input_feats, step, total_steps
+            node_embed, edge_embed,rigids_nm, node_mask, input_feats, step, total_steps
         )
 
         # Stage 4
         return self.forward_stage4_heads(
-            s_res, r_res, sideatom_mask, thickness_nm, reg_hgf
+            s_res, r_res, sideatom_mask, thickness_nm, None
         )
 
     # ======================================================
@@ -293,35 +344,66 @@ class HierarchicalGaussianFieldModel(nn.Module):
 
             node_embed = self.trunk[f"node_transition_{b}"](node_embed) * node_mask[..., None]
 
-            if b < self.ipa.num_blocks - 1:
-                edge_embed = self.trunk[f"edge_transition_{b}"](node_embed, edge_embed) * edge_mask[..., None]
+
+            edge_embed = self.trunk[f"edge_transition_{b}"](node_embed, edge_embed) * edge_mask[..., None]
 
             rigids_nm = self.trunk[f"gau_update_{b}"](
                 node_embed, rigids_nm, mask=input_feats["update_mask"]
             )
 
 
-        return node_embed, rigids_nm
+        return node_embed,edge_embed, rigids_nm
 
-    def forward_stage3_hgf(self, node_embed, rigids_nm, node_mask, input_feats, step, total_steps):
+    def forward_stage3_hgf(self, node_embed,edge_embed, rigids_nm, node_mask, input_feats, step, total_steps):
         levels_down, reg_down = self.down(
-            node_embed, rigids_nm, node_mask, step, total_steps
+            node_embed,edge_embed, rigids_nm, node_mask, step, total_steps
         )
-        sL, rL, mL = levels_down[-1]["s"], levels_down[-1]["r"], levels_down[-1]["mask"]
-        sL, rL = self.bottleneck(sL, rL, mL)
-        levels_up, reg_up = self.up(sL, rL, mL, step, total_steps)
+        sL, zL,rL, mL = levels_down[-1]["s"], levels_down[-1]["z"], levels_down[-1]["r"], levels_down[-1]["mask"]
+        sL,zL, rL = self.bottleneck(sL,zL, rL, mL)
+        # levels_up, reg_up = self.up(sL, rL, mL, step, total_steps)
 
-        last = levels_up[-1]
-        final_levels, reg_final = self.final_up(
-            s_parent=last["s"],
-            r_parent=last["r"],
-            mask_parent=last["mask"],
-            node_mask=node_mask,
-            res_idx=input_feats["res_idx"],
-        )
+        # last = levels_up[-1]
+
+
+
+
+
+        if not self.SEM_only:
+            final_levels, reg_final = self.final_up(
+                s_parent=sL,
+                r_parent=rL,
+                mask_parent=mL,
+                node_mask=node_mask,
+                res_idx=input_feats["res_idx"],
+            )
+
+            # final_levels, reg_final = self.final_up(
+            #     s_parent=node_embed,
+            #     r_parent=rigids_nm,
+            #     mask_parent=node_mask,
+            #     node_mask=node_mask,
+            #     res_idx=input_feats["res_idx"],
+            # )
+
+        else:
+            # final_levels, reg_final = self.final_up(
+            #     s_parent=last["s"],
+            #     mask_parent=last["mask"],
+            #     node_mask=node_mask,
+            #     res_idx=input_feats["res_idx"],
+            # )
+            final_levels, reg_final = self.final_up(
+                s_parent=sL,
+                mask_parent=node_mask,
+                node_mask=node_mask,
+                res_idx=input_feats["res_idx"],
+            )
+
+
+
         s_res = final_levels[-1]["s"]
         r_res = final_levels[-1]["r"]
-        return s_res, r_res, reg_down + reg_up + reg_final
+        return s_res, r_res, None
 
 
     def _make_noise_t(self, input_feats, node_mask):
