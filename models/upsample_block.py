@@ -127,7 +127,106 @@ def build_rigid_from_mu_sigma(
 
     return r
 
-import torch
+
+
+@torch.no_grad()
+def sample_from_mixture(mu_p, Sig_p, pi, M, mask_parent=None, eps=1e-6):
+    """
+    mu_p: [B,K,3], Sig_p: [B,K,3,3], pi: [B,K] normalized
+    return cand_x: [B,M,3], cand_pid: [B,M]
+    """
+    B, K, _ = mu_p.shape
+    device, dtype = mu_p.device, mu_p.dtype
+    I = torch.eye(3, device=device, dtype=dtype)[None, None]
+
+    if mask_parent is not None:
+        pi = pi * (mask_parent > 0.5).to(pi.dtype)
+        pi = pi / pi.sum(dim=-1, keepdim=True).clamp_min(1e-9)
+
+    pid = torch.multinomial(pi, num_samples=M, replacement=True)  # [B,M]
+    mu_k = mu_p.gather(1, pid[..., None].expand(B, M, 3))
+    Sig_k = Sig_p.gather(1, pid[..., None, None].expand(B, M, 3, 3))
+    Sig_k = 0.5 * (Sig_k + Sig_k.transpose(-1, -2)) + eps * I
+
+    L = torch.linalg.cholesky(Sig_k)
+    z = torch.randn((B, M, 3), device=device, dtype=dtype)
+    x = mu_k + torch.einsum("bmij,bmj->bmi", L, z)
+    return x, pid
+
+
+
+@torch.no_grad()
+def init_sigma_from_child_spacing(
+    mu0: torch.Tensor,            # [B,N,3]
+    node_mask: torch.Tensor,      # [B,N] 1/0
+    k_nn: int = 8,
+    alpha: float = 1.5,
+    sigma_floor: float = 1e-3,
+    sigma_ceil: float = 1e2,
+    jitter: float = 1e-6,
+) -> torch.Tensor:
+    """
+    Estimate an isotropic covariance from local spacing.
+    Return: [B,N,3,3]
+    """
+    B, N, _ = mu0.shape
+    device, dtype = mu0.device, mu0.dtype
+    I = torch.eye(3, device=device, dtype=dtype)
+
+    # pairwise dist2
+    dist2 = torch.cdist(mu0, mu0, p=2) ** 2  # [B,N,N]
+    # mask invalid children
+    big = 1e9
+    dist2 = dist2.masked_fill((node_mask < 0.5).unsqueeze(1), big)
+    dist2 = dist2.masked_fill((node_mask < 0.5).unsqueeze(2), big)
+    # exclude self
+    dist2 = dist2 + torch.eye(N, device=device, dtype=dtype).unsqueeze(0) * big
+
+    k_eff = min(k_nn, max(N - 1, 1))
+    d2_knn, _ = torch.topk(dist2, k=k_eff, dim=-1, largest=False)  # [B,N,k]
+    # median or mean of nearest distances
+    d = torch.sqrt(d2_knn.clamp_min(0.0) + 1e-12)
+    # use mean as radius proxy
+    r = d.mean(dim=-1) * alpha  # [B,N]
+
+    r = r.clamp(min=sigma_floor, max=sigma_ceil)
+    var = (r ** 2).unsqueeze(-1)  # [B,N,1]
+    Sig = I.view(1, 1, 3, 3) * var.view(B, N, 1, 1)
+    Sig = Sig + jitter * I.view(1, 1, 3, 3)
+    Sig = Sig * node_mask[:, :, None, None]
+    return Sig
+
+@torch.no_grad()
+def init_semantic_from_mu_to_parents(
+    mu0: torch.Tensor,            # [B,N,3]
+    s_parent: torch.Tensor,       # [B,K,C]
+    mu_p: torch.Tensor,           # [B,K,3]
+    pi: torch.Tensor,             # [B,K]
+    mask_parent: torch.Tensor,    # [B,K]
+    sigma_s: float = 2.0,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute soft parent responsibility w (B,N,K) from distance in mu-space,
+    then s0 = w @ s_parent.
+    """
+    B, N, _ = mu0.shape
+    K = mu_p.shape[1]
+    device, dtype = mu0.device, mu0.dtype
+
+    dist2 = ((mu0.unsqueeze(2) - mu_p.unsqueeze(1)) ** 2).sum(dim=-1)  # [B,N,K]
+    sigma2 = max(float(sigma_s), 1e-6) ** 2
+    logits = -dist2 / (2.0 * sigma2)
+
+    # include pi prior
+    logits = logits + (pi.clamp_min(1e-9).log().unsqueeze(1))
+
+    # mask invalid parents
+    logits = logits.masked_fill((mask_parent < 0.5).unsqueeze(1), -1e9)
+
+    w = torch.softmax(logits, dim=-1)  # [B,N,K]
+    s0 = torch.einsum("bnk,bkc->bnc", w, s_parent)
+    return s0, w
+
 
 def geom_feat_from_mu_sigma_fast(mu: torch.Tensor,
                                 Sigma: torch.Tensor,
@@ -1134,3 +1233,271 @@ class HierarchicalUpsampleSemanticModule(nn.Module):
             s, mask = s1, mask0
 
         return levels, reg_total
+
+
+
+import math
+import torch
+import torch.nn.functional as F
+
+
+# -----------------------------
+# small utils
+# -----------------------------
+def _safe_cholesky(A: torch.Tensor, jitter: float = 1e-6, max_tries: int = 4):
+    """A: [...,3,3] SPD-ish -> L: [...,3,3]"""
+    I = torch.eye(3, device=A.device, dtype=A.dtype)
+    for t in range(max_tries):
+        try:
+            return torch.linalg.cholesky(A + (jitter * (10 ** t)) * I)
+        except RuntimeError:
+            continue
+    # last resort: symmetrize + bigger jitter
+    A = 0.5 * (A + A.transpose(-1, -2))
+    return torch.linalg.cholesky(A + (jitter * (10 ** (max_tries - 1))) * I)
+
+
+def _mahalanobis2(delta: torch.Tensor, Sigma: torch.Tensor, jitter: float = 1e-6):
+    """
+    delta: [...,3]
+    Sigma: [...,3,3]
+    return: [...], delta^T Sigma^-1 delta
+    """
+    L = _safe_cholesky(Sigma, jitter=jitter)  # [...,3,3]
+    y = torch.linalg.solve_triangular(L, delta.unsqueeze(-1), upper=False)  # [...,3,1]
+    return (y.squeeze(-1) ** 2).sum(dim=-1)
+
+
+def _project_inside_ellipsoid(mu_child, mu_parent, Sig_parent, tau2: float = 9.0, jitter: float = 1e-6):
+    """
+    Ensure (mu_child - mu_parent)^T Sig_parent^-1 (mu_child - mu_parent) <= tau2
+    by radial scaling in parent metric (one-shot projection).
+    """
+    d = mu_child - mu_parent
+    d2 = _mahalanobis2(d, Sig_parent, jitter=jitter)  # [...]
+    # if d2 <= tau2 -> keep; else scale down by sqrt(tau2/d2)
+    scale = torch.sqrt((tau2 / d2.clamp_min(1e-12))).clamp_max(1.0)
+    return mu_parent + d * scale.unsqueeze(-1)
+
+
+def _allocate_counts(pi: torch.Tensor, mask_parent: torch.Tensor, N: int,
+                     min_per_parent: int = 1, max_per_parent: int = None):
+    """
+    pi: [B,K] normalized over valid parents
+    mask_parent: [B,K] {0,1}
+    return m: [B,K] int counts, sum_k m = N for each batch b
+    """
+    B, K = pi.shape
+    device = pi.device
+
+    valid = (mask_parent > 0.5)
+    m = torch.zeros((B, K), device=device, dtype=torch.long)
+
+    for b in range(B):
+        idx = torch.nonzero(valid[b], as_tuple=False).squeeze(-1)
+        if idx.numel() == 0:
+            continue
+
+        # initial: min_per_parent
+        m[b, idx] = min_per_parent
+        rem = N - int(min_per_parent * idx.numel())
+        if rem < 0:
+            # too many parents for N: fall back to 1-hot-ish
+            m[b].zero_()
+            # keep first N valid
+            m[b, idx[:N]] = 1
+            continue
+
+        # distribute remaining by pi
+        pb = pi[b, idx]
+        pb = pb / pb.sum().clamp_min(1e-9)
+        add = torch.floor(pb * rem).to(torch.long)
+        m[b, idx] += add
+        rem2 = rem - int(add.sum().item())
+
+        if rem2 > 0:
+            # assign leftover by largest fractional parts
+            frac = (pb * rem) - add.to(pb.dtype)
+            _, order = torch.sort(frac, descending=True)
+            m[b, idx[order[:rem2]]] += 1
+
+        if max_per_parent is not None:
+            m[b, idx] = torch.clamp(m[b, idx], max=int(max_per_parent))
+            # re-balance if clamped changed total
+            total = int(m[b, idx].sum().item())
+            if total != N:
+                # adjust by adding/removing one-by-one (cheap; K small)
+                diff = N - total
+                if diff > 0:
+                    # add to largest pi
+                    _, order = torch.sort(pb, descending=True)
+                    for t in range(diff):
+                        m[b, idx[order[t % order.numel()]]] += 1
+                else:
+                    # remove from smallest pi but keep >=1
+                    _, order = torch.sort(pb, descending=False)
+                    t = 0
+                    while diff < 0 and t < 10_000:
+                        ksel = idx[order[t % order.numel()]]
+                        if m[b, ksel] > min_per_parent:
+                            m[b, ksel] -= 1
+                            diff += 1
+                        t += 1
+
+    return m
+
+
+def _sobol_normal(n: int, device, dtype, scramble: bool = True):
+    """
+    Generate n samples ~ N(0,I) in R^3 using Sobol + inverse-CDF.
+    """
+    engine = torch.quasirandom.SobolEngine(dimension=3, scramble=scramble)
+    u = engine.draw(n).to(device=device, dtype=dtype).clamp(1e-6, 1 - 1e-6)
+    # inverse CDF of standard normal
+    z = torch.erfinv(2 * u - 1) * math.sqrt(2.0)
+    return z  # [n,3]
+
+
+def _one_step_repulsion(mu: torch.Tensor, parent_idx: torch.Tensor, eta: float = 0.02, eps: float = 1e-4):
+    """
+    mu: [B,N,3], parent_idx: [B,N] (int)
+    One shot repulsion within same parent to reduce collapse.
+    """
+    B, N, _ = mu.shape
+    mu2 = mu.clone()
+    for b in range(B):
+        pid = parent_idx[b]
+        for k in pid.unique():
+            sel = torch.nonzero(pid == k, as_tuple=False).squeeze(-1)
+            if sel.numel() <= 1:
+                continue
+            x = mu2[b, sel]  # [m,3]
+            diff = x[:, None, :] - x[None, :, :]  # [m,m,3]
+            dist2 = (diff ** 2).sum(dim=-1) + eps
+            # zero self
+            dist2.fill_diagonal_(1e9)
+            force = (diff / dist2[..., None]).sum(dim=1)  # [m,3]
+            mu2[b, sel] = x + eta * force
+    return mu2
+
+
+# -----------------------------
+# core: cover upsample init
+# -----------------------------
+@torch.no_grad()
+def cover_upsample_init(
+    mu_p: torch.Tensor,        # [B,K,3]
+    Sig_p: torch.Tensor,       # [B,K,3,3]
+    pi: torch.Tensor,          # [B,K] (normalized over valid parents)
+    mask_parent: torch.Tensor, # [B,K]
+    node_mask: torch.Tensor,   # [B,N]
+    jitter: float = 1e-6,
+    tau2_inside: float = 9.0,  # how far (Mahalanobis^2) child centers can go in parent
+    min_per_parent: int = 1,
+    sigma_floor: float = 0.03,
+    sigma_ceil: float = 2.0,
+    mix_cover_alpha: float = 0.35,   # blend split-sigma with spacing-sigma
+    k_nn_spacing: int = 4,           # used only for spacing-sigma
+    repulse_eta: float = 0.02,       # 0 to disable
+):
+    """
+    Returns:
+      mu0: [B,N,3]
+      Sig0: [B,N,3,3]
+      parent_idx: [B,N]  (int in [0,K))
+      m_counts: [B,K] int
+    """
+    B, K, _ = mu_p.shape
+    N = node_mask.shape[1]
+    device, dtype = mu_p.device, mu_p.dtype
+    I = torch.eye(3, device=device, dtype=dtype)[None, None]
+
+    # (1) allocate m_k per parent (hard guarantee coverage across parents)
+    m = _allocate_counts(pi, mask_parent, N, min_per_parent=min_per_parent)  # [B,K] long
+
+    # (2) generate mu0 per parent using Sobol-normal mapped by parent chol
+    mu0 = torch.zeros((B, N, 3), device=device, dtype=dtype)
+    Sig0_split = torch.zeros((B, N, 3, 3), device=device, dtype=dtype)
+    parent_idx = torch.zeros((B, N), device=device, dtype=torch.long)
+
+    for b in range(B):
+        cursor = 0
+        for k in range(K):
+            if mask_parent[b, k] < 0.5:
+                continue
+            mk = int(m[b, k].item())
+            if mk <= 0:
+                continue
+
+            # low-discrepancy samples in R^3
+            z = _sobol_normal(mk, device=device, dtype=dtype, scramble=True)  # [mk,3]
+
+            # map into ellipsoid by parent covariance
+            Lk = _safe_cholesky(Sig_p[b, k], jitter=jitter)  # [3,3]
+            x = mu_p[b, k].unsqueeze(0) + (z @ Lk.transpose(0, 1))  # [mk,3]
+
+            # project inside parent ellipsoid (avoid far tails)
+            x = _project_inside_ellipsoid(
+                x, mu_p[b, k].unsqueeze(0), Sig_p[b, k].unsqueeze(0),
+                tau2=tau2_inside, jitter=jitter
+            )
+
+            # write
+            mu0[b, cursor:cursor + mk] = x
+            parent_idx[b, cursor:cursor + mk] = k
+
+            # split-sigma: Sigma_child = Sigma_parent / mk^(2/3)
+            # (mk=1 -> same scale)
+            scale = float(max(mk, 1)) ** (2.0 / 3.0)
+            Sig_child = Sig_p[b, k] / scale
+            Sig0_split[b, cursor:cursor + mk] = Sig_child.unsqueeze(0).expand(mk, 3, 3)
+
+            cursor += mk
+
+        # if for any reason cursor != N, pad with first valid parent (rare)
+        if cursor < N:
+            # find a valid parent
+            kk = int(torch.nonzero(mask_parent[b] > 0.5, as_tuple=False)[0].item())
+            mk = N - cursor
+            z = _sobol_normal(mk, device=device, dtype=dtype, scramble=True)
+            Lk = _safe_cholesky(Sig_p[b, kk], jitter=jitter)
+            x = mu_p[b, kk].unsqueeze(0) + (z @ Lk.transpose(0, 1))
+            x = _project_inside_ellipsoid(x, mu_p[b, kk].unsqueeze(0), Sig_p[b, kk].unsqueeze(0),
+                                          tau2=tau2_inside, jitter=jitter)
+            mu0[b, cursor:] = x
+            parent_idx[b, cursor:] = kk
+            Sig0_split[b, cursor:] = (Sig_p[b, kk].unsqueeze(0).expand(mk, 3, 3))
+
+    # apply node mask (in case padding N)
+    mu0 = mu0 * node_mask[..., None]
+
+    # (3) optional one-shot repulsion within same parent (helps avoid clumps)
+    if repulse_eta is not None and repulse_eta > 0:
+        mu0 = _one_step_repulsion(mu0, parent_idx, eta=float(repulse_eta))
+        mu0 = mu0 * node_mask[..., None]
+
+    # (4) spacing-based sigma (your existing cover sigma idea)
+    #     You already have init_sigma_from_child_spacing(mu0, node_mask, ...).
+    #     We'll re-use it by expecting you to import it. If not available, fallback to isotropic by local nn dist.
+    Sig0_cover = init_sigma_from_child_spacing(
+        mu0, node_mask, k_nn=int(k_nn_spacing),
+        alpha=0.6,  # same meaning as your old function uses
+        sigma_floor=float(sigma_floor),
+        sigma_ceil=float(sigma_ceil),
+    )
+    Sig0_cover = Sig0_cover + jitter * I * node_mask[:, :, None, None]
+
+    # (5) blend: split-sigma (mass/partition semantics) + cover-sigma (geometry spacing)
+    a = float(mix_cover_alpha)
+    Sig0 = (1.0 - a) * Sig0_split + a * Sig0_cover
+    Sig0 = 0.5 * (Sig0 + Sig0.transpose(-1, -2)) + jitter * I
+
+    # clamp diag magnitude as sanity
+    diag = torch.diagonal(Sig0, dim1=-2, dim2=-1)
+    diag = diag.clamp_min(float(sigma_floor) ** 2).clamp_max(float(sigma_ceil) ** 2)
+    Sig0 = Sig0.clone()
+    Sig0[..., 0, 0] = diag[..., 0]
+    Sig0[..., 1, 1] = diag[..., 1]
+    Sig0[..., 2, 2] = diag[..., 2]
+
+    return mu0, Sig0, parent_idx, m

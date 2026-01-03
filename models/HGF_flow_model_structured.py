@@ -38,7 +38,7 @@ BottleneckSemanticModule
 )
 from models.downblock import HierarchicalDownsampleIGAModule,HierarchicalDownsampleModuleFast
 from models.upsample_block import HierarchicalUpsampleIGAModule,HierarchicalUpsampleSemanticModule
-from models.finnalup import FinalCoarseToFineIGAModule
+from models.finnalup import FinalCoarseToFineIGAModule,FinalCoarseToFineDensenSampleIGAModule,FinalCoarseToFineDensenSampleIGAModulev2
 from models.FinalSemUp import FinalCoarseToFineSemanticUpModule
 
 
@@ -208,6 +208,42 @@ class HierarchicalGaussianFieldModel(nn.Module):
             )
             self.trunk[f"gau_update_{b}"] = GaussianUpdateBlock(self.ipa.c_s)
 
+        self.trunk_out = nn.ModuleDict()
+        for b in range(self.ipa.num_blocks):
+            self.trunk_out[f"iga_{b}"] = InvariantGaussianAttention(
+                c_s=self.ipa.c_s,
+                c_z=self.ipa.c_z,
+                c_hidden=self.ipa.c_hidden,
+                no_heads=self.ipa.no_heads,
+                no_qk_gaussians=self.ipa.no_qk_points,
+                no_v_points=self.ipa.no_v_points,
+                layer_idx=b,
+            )
+            self.trunk_out[f"iga_ln_{b}"] = nn.LayerNorm(self.ipa.c_s)
+
+            # Seq Transformer
+            tfmr_in = self.ipa.c_s
+            tfmr_layer = torch.nn.TransformerEncoderLayer(
+                d_model=tfmr_in,
+                nhead=self.ipa.seq_tfmr_num_heads,
+                dim_feedforward=tfmr_in,  # or *2
+                batch_first=True, dropout=0.0, norm_first=False
+            )
+            self.trunk_out[f'seq_tfmr_{b}'] = torch.nn.TransformerEncoder(
+                tfmr_layer, self.ipa.seq_tfmr_num_layers)
+
+            self.trunk_out[f'post_tfmr_{b}'] = Linear(tfmr_in, self.ipa.c_s, init="final")
+            # Transition
+            self.trunk_out[f'node_transition_{b}'] = ipa_pytorch.StructureModuleTransition(c=self.ipa.c_s)
+
+            edge_in = self.conf.edge_embed_size
+            self.trunk_out[f'edge_transition_{b}'] = ipa_pytorch.EdgeTransition(
+                node_embed_size=self.ipa.c_s,
+                edge_embed_in=edge_in,
+                edge_embed_out=self.conf.edge_embed_size,
+            )
+            self.trunk_out[f"gau_update_{b}"] = GaussianUpdateBlock(self.ipa.c_s)
+
         # ========== Stage 3: HGF ==========
         if not self.SEM_only:
             self.down = HierarchicalDownsampleIGAModule(
@@ -230,7 +266,7 @@ class HierarchicalGaussianFieldModel(nn.Module):
             )
 
 
-            self.final_up = FinalCoarseToFineIGAModule(
+            self.final_up = FinalCoarseToFineDensenSampleIGAModulev2(
                 c_s=self.ipa.c_s,
                 iga_conf=self.ipa,
                 OffsetGaussianRigid_cls=OffsetGaussianRigid,
@@ -310,13 +346,17 @@ class HierarchicalGaussianFieldModel(nn.Module):
         )
 
         # Stage 3
-        s_res, r_res, reg_hgf = self.forward_stage3_hgf(
+        s_res,z_res, r_res, reg_hgf = self.forward_stage3_hgf(
             node_embed, edge_embed,rigids_nm, node_mask, input_feats, step, total_steps
         )
 
+        # Stage 3.5
+        s_res,edge_embed, r_res = self.forward_stage2_trunk(
+            s_res, z_res, r_res, node_mask, edge_mask,input_feats
+        )
         # Stage 4
         return self.forward_stage4_heads(
-            s_res, r_res, sideatom_mask, thickness_nm, None
+            s_res, r_res, sideatom_mask, thickness_nm, reg_hgf
         )
 
     # ======================================================
@@ -354,11 +394,36 @@ class HierarchicalGaussianFieldModel(nn.Module):
 
         return node_embed,edge_embed, rigids_nm
 
+
+    def forward_stage3_half_trunk(self, node_embed, edge_embed, rigids_nm, node_mask,edge_mask, input_feats):
+        for b in range(self.ipa.num_blocks):
+            iga_out = self.trunk_out[f"iga_{b}"](s=node_embed, z=edge_embed, r=rigids_nm, mask=node_mask)
+            iga_out = iga_out * node_mask[..., None]
+            node_embed = self.trunk_out[f"iga_ln_{b}"](node_embed + iga_out)
+
+            seq_tfmr_out = self.trunk_out[f"seq_tfmr_{b}"](
+                node_embed, src_key_padding_mask=(1 - node_mask).to(torch.bool)
+            )
+            node_embed = node_embed + self.trunk_out[f"post_tfmr_{b}"](seq_tfmr_out)
+
+            node_embed = self.trunk_out[f"node_transition_{b}"](node_embed) * node_mask[..., None]
+
+
+            edge_embed = self.trunk_out[f"edge_transition_{b}"](node_embed, edge_embed) * edge_mask[..., None]
+
+            rigids_nm = self.trunk_out[f"gau_update_{b}"](
+                node_embed, rigids_nm, mask=input_feats["update_mask"]
+            )
+
+
+        return node_embed,edge_embed, rigids_nm
+
+
     def forward_stage3_hgf(self, node_embed,edge_embed, rigids_nm, node_mask, input_feats, step, total_steps):
         levels_down, reg_down = self.down(
             node_embed,edge_embed, rigids_nm, node_mask, step, total_steps
         )
-        sL, zL,rL, mL = levels_down[-1]["s"], levels_down[-1]["z"], levels_down[-1]["r"], levels_down[-1]["mask"]
+        sL, zL,rL, mL ,curr_occ= levels_down[-1]["s"], levels_down[-1]["z"], levels_down[-1]["r"], levels_down[-1]["mask"], levels_down[-1]["curr_occ"]
         sL,zL, rL = self.bottleneck(sL,zL, rL, mL)
         # levels_up, reg_up = self.up(sL, rL, mL, step, total_steps)
 
@@ -371,9 +436,11 @@ class HierarchicalGaussianFieldModel(nn.Module):
         if not self.SEM_only:
             final_levels, reg_final = self.final_up(
                 s_parent=sL,
+                z_parent=zL,
                 r_parent=rL,
                 mask_parent=mL,
                 node_mask=node_mask,
+                occ_parent=curr_occ,
                 res_idx=input_feats["res_idx"],
             )
 
@@ -402,8 +469,9 @@ class HierarchicalGaussianFieldModel(nn.Module):
 
 
         s_res = final_levels[-1]["s"]
+        z_res = final_levels[-1]["z"]
         r_res = final_levels[-1]["r"]
-        return s_res, r_res, None
+        return s_res,z_res, r_res, reg_down
 
 
     def _make_noise_t(self, input_feats, node_mask):
@@ -520,7 +588,7 @@ class HierarchicalGaussianFieldModel(nn.Module):
         ).unsqueeze(-1)  # [B,N,1] ang
         thickness_nm = thickness_ang.to(node_mask.dtype) * du.ANG_TO_NM_SCALE  # [B,N,1] nm
 
-        atoms14_local = input_feats["atoms14_local_t"][..., :3]
+        atoms14_local = input_feats["atoms14_local_t"][..., :14]
         all_atoms_global = base_rigid.unsqueeze(-1).apply(atoms14_local)  # [B,N,14,3] ang
 
         gt_exists = input_feats["atom14_gt_exists"].float()  # [B,N,14]

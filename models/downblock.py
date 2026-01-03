@@ -6,6 +6,7 @@ from typing import Optional, Sequence, Tuple
 from data import utils as du
 from models.pool import LearnOnlyGaussianPoolingV2,coarse_rigids_from_mu_sigma,UniformAnchorSemGeoAssign,UniformAnchorSemAssign
 from models.IGA import InvariantGaussianAttention,CoarseIGATower,GaussianUpdateBlock,FastTransformerTower
+from models.SlotIGA import  IGASlotPoolingV1
 from data.GaussianRigid import save_gaussian_as_pdb
 from models.loss import HierarchicalGaussianLoss,SymmetricGaussianLoss
 from models.EdgeCoarsen import CoarseEdgeCoarsenAndFuse
@@ -27,8 +28,8 @@ class HierarchicalDownsampleIGAModule(nn.Module):
             iga_conf,
             OffsetGaussianRigid_cls,
             num_downsample: int = 2,
-            ratio: float = 6.0,
-            k_max_cap: int = 64,
+            ratio: float = 2.0,
+            k_max_cap: int = 1024,
             coarse_iga_layers: int | list[int] = 6,  # <--- 现在可配置
     ):
         super().__init__()
@@ -44,13 +45,16 @@ class HierarchicalDownsampleIGAModule(nn.Module):
             per_level_layers = list(coarse_iga_layers)
 
         # pool per level
-        self.pools = nn.ModuleList([
-            LearnOnlyGaussianPoolingV2(
-                c_s=c_s, ratio=ratio, k_max_cap=k_max_cap,
-                tau_init=0.2, slots_init_scale=0.2,
-            )
-            for _ in range(num_downsample)
-        ])
+        # self.pools = nn.ModuleList([
+        #     LearnOnlyGaussianPoolingV2(
+        #         c_s=c_s, ratio=ratio, k_max_cap=k_max_cap,
+        #         tau_init=0.2, slots_init_scale=0.2,
+        #     )
+        #     for _ in range(num_downsample)
+        # ])
+
+        self.pools = nn.ModuleList(
+            [IGASlotPoolingV1(c_s=c_s, ratio=ratio, k_max=k_max_cap) for _ in range(num_downsample)])
 
         # self.pools = nn.ModuleList([
         #     UniformAnchorSemGeoAssign(
@@ -146,7 +150,7 @@ class HierarchicalDownsampleIGAModule(nn.Module):
             self.pools[lv].tau = 0.8 - 0.5 * t
 
             # 3) pooling
-            A, s_c, mu_c, Sigma_c, pool_loss = self.pools[lv](
+            A, s_c, mu_c, Sigma_c, idx, pool_loss = self.pools[lv](
                 s=s, mu=mu, Sigma=Sigma, mask=mask,
                 # w_occ=1.0,
                 # w_rep=0.1,
@@ -184,20 +188,20 @@ class HierarchicalDownsampleIGAModule(nn.Module):
             r_c = coarse_rigids_from_mu_sigma(
                 mu_c, Sigma_c, self.OffsetGaussianRigid_cls
             )
-            ang_rigids = r_c.scale_translation(10.0)  # 0.1
+            # ang_rigids = r_c.scale_translation(10.0)  # 0.1
 
             # pooling 得到 r_c / mask_c 后
-            save_gaussian_as_pdb(
-                gaussian_rigid=ang_rigids,
-                filename=f"debug_lv{lv}_r_cang_postpool_gaussian_mean_anchortrain.pdb",
-                mask=mask_c,
-                center_mode="gaussian_mean",
-            )
+            # save_gaussian_as_pdb(
+            #     gaussian_rigid=ang_rigids,
+            #     filename=f"debug_lv{lv}_r_down_fps.pdb",
+            #     mask=mask_c,
+            #     center_mode="gaussian_mean",
+            # )
 
             # ---- build z_c for this level ----
             if z is not None and getattr(self, "edge_fusers", None) is not None:
                 z_c, Z_sem_c, Z_geo_c = self.edge_fusers[lv](
-                    A=A,Z_fine=z, r_c=r_c,
+                    A=A,Z_in=z, r_target=r_c,
                     mask_f=mask, mask_c=mask_c
                 )
             else:
@@ -211,7 +215,7 @@ class HierarchicalDownsampleIGAModule(nn.Module):
             # # pooling 得到 r_c / mask_c 后
             # save_gaussian_as_pdb(
             #     gaussian_rigid=ang_rigids,
-            #     filename=f"debug_lv{lv}_r_cang_postpool_gaussian_mean_anchortrain_aftertowner.pdb",
+            #     filename=f"debug_lv{lv}_r_down_aftertowner.pdb",
             #     mask=mask_c,
             #     center_mode="gaussian_mean",
             # )

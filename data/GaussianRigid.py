@@ -596,8 +596,7 @@ class OffsetGaussianRigid(Rigid):
 # ==========================================
 # 导出 PDB + ANISOU (通用)
 # ==========================================
-import torch
-import numpy as np
+
 
 def save_gaussian_as_pdb(
     gaussian_rigid,

@@ -325,15 +325,15 @@ class LearnOnlyGaussianPoolingV2(nn.Module):
         # logits_shape = torch.einsum("bnd,bkd->bnk", g, geo_slots)
 
         # ---- (4) weak slot identity bias (symmetry breaking) ----
-        if self.id_bias is not None:
-            idb = self.id_bias.view(1, 1, K)
-        else:
-            idb = getattr(self, "_fixed_id_bias", torch.tensor(0.0, device=device, dtype=dtype)).view(1, 1, 1)
+        # if self.id_bias is not None:
+        #     idb = self.id_bias.view(1, 1, K)
+        # else:
+        #     idb = getattr(self, "_fixed_id_bias", torch.tensor(0.0, device=device, dtype=dtype)).view(1, 1, 1)
 
         # ---- combine logits ----
         logits = (
             self.w_sem * logits_sem +
-            self.w_mu * logits_mu +idb
+            self.w_mu * logits_mu #+idb
             # self.w_shape * logits_shape +
 
         )

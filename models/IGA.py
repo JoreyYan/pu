@@ -16,7 +16,9 @@ from models import ipa_pytorch  # ,so3_theta,rope3D
 # ==========================================
 
 # @torch.compile(fullgraph=True, dynamic=False)
-def fused_gaussian_overlap_score(delta: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
+def fused_gaussian_overlap_score(delta: torch.Tensor, sigma: torch.Tensor,    eps: float = 1e-6,
+    with_logdet: bool = False,
+) -> torch.Tensor:
     """
     计算 Gaussian Overlap Score (Mahalanobis Distance)。
     Score = -0.5 * delta^T * (Sigma)^-1 * delta
@@ -436,7 +438,8 @@ class InvariantGaussianAttention(nn.Module):
         #    a, b 是每个 head 各自的可学习标量，不依赖当前 map 的 mean/std
         a = F.softplus(self.geo_scale).view(1, -1, 1, 1)  # a_h >= 0
         b = self.geo_bias.view(1, -1, 1, 1)  # [1, H, 1, 1]
-        G_geo = F.softplus(a * G_raw + b)  # [B, H, N, N]
+        # G_geo = F.softplus(a * G_raw + b)  # [B, H, N, N]
+        G_geo = a * G_raw + b  # [B, H, N, N]
 
 
         # Vis Cache: save logits before adding geo (scalar + pair)

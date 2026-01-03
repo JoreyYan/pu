@@ -1,6 +1,6 @@
 shared:
   seed: 123
-  max_cache_size: 100_000
+  max_cache_size: 90_000
   samples_per_eval_length: 5
   num_eval_lengths : 8
   max_eval_length: 1000
@@ -82,7 +82,7 @@ pdb_dataset:
 
   # Filtering
   filter:
-    max_num_res: 384
+    max_num_res: 250
     min_num_res: 60
     max_coil_percent: 0.5
     rog_quantile: 0.96

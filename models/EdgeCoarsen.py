@@ -18,6 +18,7 @@ class CoarseEdgeCoarsenAndFuse(nn.Module):
         geo_rbf_max: float = 10.0,   # in your geometry unit (nm if r in nm)
         use_local_dir: bool = False, # if you have stable rotations
         use_sigma_stats: bool = False,
+            mode:str = "down",
         eps: float = 1e-8,
     ):
         super().__init__()
@@ -26,6 +27,7 @@ class CoarseEdgeCoarsenAndFuse(nn.Module):
         self.geo_rbf_max = geo_rbf_max
         self.use_local_dir = use_local_dir
         self.use_sigma_stats = use_sigma_stats
+        self.mode=mode
 
         geo_dim = geo_rbf_bins
         if use_local_dir:
@@ -91,6 +93,31 @@ class CoarseEdgeCoarsenAndFuse(nn.Module):
 
         return Z_num / Z_den.unsqueeze(-1)
 
+    def lift_sem_dense(self, w, Z_parent, mask_child=None, mask_parent=None):
+        """
+        Z_child = (w Z_parent w^T) / (w 1 w^T)
+        w: [B,N,K]  child<-parent
+        Z_parent: [B,K,K,Cz]
+        return: [B,N,N,Cz]
+        """
+        if mask_child is not None:
+            w = w * mask_child.unsqueeze(-1)
+        if mask_parent is not None:
+            Z_parent = Z_parent * (mask_parent[:, :, None] * mask_parent[:, None, :]).unsqueeze(-1)
+
+        Z_num = torch.einsum("bik,bklc,bjl->bijc", w, Z_parent, w)
+
+        ones = torch.ones_like(Z_parent[..., 0])  # [B,K,K]
+        Z_den = torch.einsum("bik,bkl,bjl->bij", w, ones, w).clamp_min(self.eps)
+
+        Z_child = Z_num / Z_den.unsqueeze(-1)
+
+        if mask_child is not None:
+            m2 = mask_child[:, :, None] * mask_child[:, None, :]
+            Z_child = Z_child * m2.unsqueeze(-1)
+
+        return Z_child
+
     def geo_from_rc(self, r_c, mask_c=None):
         """
         Build Z_geo_c: [B,K,K,geo_dim] from coarse geometry.
@@ -132,12 +159,37 @@ class CoarseEdgeCoarsenAndFuse(nn.Module):
 
         return Z_geo_c
 
-    def forward(self, A, Z_fine, r_c, mask_f=None, mask_c=None):
-        Z_sem_c = self.coarsen_sem_dense(A, Z_fine, mask_f=mask_f)   # [B,K,K,c_z_in]
-        Z_geo_c = self.geo_from_rc(r_c, mask_c=mask_c)               # [B,K,K,geo_dim]
-        Z_cat = torch.cat([Z_sem_c, Z_geo_c], dim=-1)
-        Z_c = self.fuse(Z_cat)
-        if mask_c is not None:
-            m2 = mask_c[:, :, None] * mask_c[:, None, :]
-            Z_c = Z_c * m2.unsqueeze(-1)
-        return Z_c, Z_sem_c, Z_geo_c
+    def forward(self, A, Z_in, r_target, mask_f=None, mask_c=None):
+        """
+        A: [B, N, K] 分配矩阵
+        Z_in: 输入的 pair 特征
+        r_target: 目标层级的 GaussianRigid
+        mask_f: [B, N] (Fine 层的 mask)
+        mask_c: [B, K] (Coarse 层的 mask)
+        """
+        if self.mode == 'down':
+            # --- 下采样: N -> K ---
+            # A: [B, N, K], Z_in: [B, N, N, C]
+            # 聚合公式: Z_out = A.T @ Z_in @ A
+            Z_sem_out = self.coarsen_sem_dense(A, Z_in, mask_f=mask_f)
+            # 此时目标是 Coarse 层，用 mask_c
+            Z_geo_out = self.geo_from_rc(r_target, mask_c=mask_c)
+            current_mask = mask_c
+        else:
+            # --- 上采样: K -> N ---
+            # A: [B, N, K], Z_in: [B, K, K, C]
+            # 分发公式: Z_out = A @ Z_in @ A.T
+            Z_sem_out = self.lift_sem_dense(A, Z_in, mask_parent=mask_c)
+            # 此时目标是 Fine 层，用 mask_f
+            Z_geo_out = self.geo_from_rc(r_target, mask_c=mask_f)
+            current_mask = mask_f
+
+        Z_cat = torch.cat([Z_sem_out, Z_geo_out], dim=-1)
+        Z_out = self.fuse(Z_cat)
+
+        if current_mask is not None:
+            # 2D Mask: [B, L, L, 1]
+            m2 = current_mask[:, :, None] * current_mask[:, None, :]
+            Z_out = Z_out * m2.unsqueeze(-1)
+
+        return Z_out, Z_sem_out, Z_geo_out

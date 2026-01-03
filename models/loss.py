@@ -637,7 +637,7 @@ class BackboneGaussianAutoEncoderLoss(nn.Module):
         w_pair_global: float = 1.0,  # [新增] 全局拓扑 (DRMSD, 所有 CA-CA 距离)
         w_gauss_nll: float = 0.0,   # 建议先 0，等坐标能降再开
         w_mu_anchor: float = 0.0,   # debug 用：mu_pred 贴近 CA_gt（很小即可，如 1e-3）
-        w_reg: float = 1.0,
+        w_reg: float = 10.0,
             eps: float = 1e-8
     ):
         super().__init__()
@@ -752,7 +752,7 @@ class BackboneGaussianAutoEncoderLoss(nn.Module):
                 gauss_nll = (nll * m_res[..., None]).sum() / (denom * 4.0)
 
         # ---------- (4) reg_total ----------
-        # reg = outs.get("reg_total", torch.tensor(0.0, device=pred.device))
+        reg = outs.get("reg_total", torch.tensor(0.0, device=pred.device))
         # if not torch.is_tensor(reg):
         #     reg = torch.tensor(float(reg), device=pred.device)
 
@@ -784,12 +784,12 @@ class BackboneGaussianAutoEncoderLoss(nn.Module):
 
         loss = (
             # self.w_mse * bb_mse +
-            # self.w_pair_intra * bb_pair_intra +
-            # self.w_pair_global * bb_pair_global +  # 加入全局项
+            self.w_pair_intra * bb_pair_intra +
+            self.w_pair_global * bb_pair_global +  # 加入全局项
             # self.w_gauss_nll * gauss_nll +
             # self.w_mu_anchor * mu_anchor +
-            self.w_ca_trans *bb_ca_trans
-            # self.w_reg * reg
+            self.w_ca_trans *bb_ca_trans+
+            self.w_reg * reg
         )
 
         return {
@@ -800,7 +800,7 @@ class BackboneGaussianAutoEncoderLoss(nn.Module):
             "bb_pair_global": bb_pair_global.detach(), # 监控这个指标
             "gauss_nll": gauss_nll.detach(),
             "mu_anchor": mu_anchor.detach(),
-            # "reg_total": reg.detach(),
+            "reg_total": reg.detach(),
         }
 
 
