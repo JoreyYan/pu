@@ -31,7 +31,7 @@ from models.shlossv2 import sh_loss_with_masks, sh_mse_loss
 import torch.nn.functional as F
 from models.loss import huber, pairwise_distance_loss, backbone_mse_loss
 from openfold.np.residue_constants import restype_name_to_atom14_names
-
+from models.AELOSS import seg_up_losses_angstrom,seg_ae_losses
 from models.flow_model import SideAtomsFlowModel,SideAtomsIGAModel
 from models.HGF_flow_model_structured import HierarchicalGaussianFieldModel
 from models.shattetnion.ShDecoderSidechain import SHSidechainDecoder, DynamicKSidechainDecoder, assemble_atom14_with_CA, \
@@ -42,8 +42,11 @@ import openfold.np.residue_constants as rc
 from openfold.np.protein import from_prediction, to_pdb
 from data.all_atom import atom14_to_atom37, make_new_atom14_resid
 import data.all_atom as all_atom
+import matplotlib
 from experiments.utils import _load_submodule_from_ckpt, load_partial_state_dict
-
+matplotlib.use('Agg')  # <--- 必须加这句，放在 import pyplot 之前
+import matplotlib.pyplot as plt
+import wandb
 
 def compute_gamma(vq_loss, min_gamma=0.1, max_gamma=1.0, min_vq=3, max_vq=10):
     if vq_loss <= min_vq:
@@ -145,7 +148,7 @@ class FlowModule(LightningModule):
         # _load_submodule_from_ckpt(self.model, mw, lightning_key="state_dict", source_prefix=None)
 
         # Initialize IGA Loss
-        self.iga_loss_fn = BackboneGaussianAutoEncoderLoss()
+        # self.iga_loss_fn = BackboneGaussianAutoEncoderLoss()
 
     @property
     def checkpoint_dir(self):
@@ -178,7 +181,45 @@ class FlowModule(LightningModule):
             self._inference_dir = inference_dir
             os.makedirs(self._inference_dir, exist_ok=True)
         return self._inference_dir
+    @torch.no_grad()
+    def log_ca_distance_map_wandb(self, pred_ca, gt_ca, mask, step, log_key="train/ca_dist_map"):
+        """
+        pred_ca: [N, 3]
+        gt_ca:   [N, 3]
+        mask:    [N]
+        """
+        # 1. 截取有效残基 (去除 padding)
+        valid_idx = mask.bool()
+        p = pred_ca[valid_idx].detach().cpu()
+        g = gt_ca[valid_idx].detach().cpu()
 
+        # 2. 计算距离矩阵 (N_valid, N_valid)
+        # cdist 计算成对欧氏距离
+        d_pred = torch.cdist(p.unsqueeze(0), p.unsqueeze(0)).squeeze(0)
+        d_gt = torch.cdist(g.unsqueeze(0), g.unsqueeze(0)).squeeze(0)
+
+        # 3. 绘图
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+
+        # Pred Map
+        im0 = axes[0].imshow(d_pred.numpy(), origin='lower', cmap='viridis')
+        axes[0].set_title(f"Prediction (Step {step})")
+        plt.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
+
+        # GT Map
+        im1 = axes[1].imshow(d_gt.numpy(), origin='lower', cmap='viridis')
+        axes[1].set_title("Ground Truth")
+        plt.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
+
+        plt.tight_layout()
+
+        # 4. Log 到 WandB
+        # 注意：这里需要确保 logger 是 WandBLogger
+        if hasattr(self.logger, 'experiment') and hasattr(self.logger.experiment, 'log'):
+            self.logger.experiment.log({log_key: wandb.Image(fig)}, step=step)
+
+        # 5. 关闭图像防止内存泄漏
+        plt.close(fig)
     def _get_inference_run_dir(self):
         base_dir = self.inference_dir
         if base_dir is None:
@@ -438,10 +479,97 @@ class FlowModule(LightningModule):
         noisy_batch = self.interpolant.fbb_corrupt_batch(batch,prob)
 
         # Model forward
-        outs = self.model(noisy_batch,step=self.global_step,total_steps=100000)
+        outs,downmetric = self.model(noisy_batch,step=self.global_step,total_steps=100000)
+
+
+
+        # ==========================================================
+        # [新增] WandB Visualization Logic
+        # ==========================================================
+        # 设置记录频率，例如每 100 step 记录一次
+        # 必须确保只在 rank 0 记录 (如果不使用 DDP，self.global_rank 默认为 0)
+        log_img_every = 1000
+
+        if (self.global_step % log_img_every == 0) and (self.global_rank == 0) and isinstance(self.logger, WandbLogger):
+            try:
+
+
+
+
+
+                # 1. 获取 Batch 中第一个样本的数据
+                # r_res: OffsetGaussianRigid
+                pred_ca = outs["x_hat"][0]
+
+                # # 获取 Pred CA (Translation)
+                # if hasattr(r_pred, "get_trans"):
+                #     pred_ca = r_pred.get_trans()[0]  # [N, 3]
+                # else:
+                #     pred_ca = r_pred.trans[0]
+
+                # 获取 GT CA (必须是去中心化后的 noisy_batch['trans_1'])
+                gt_ca = noisy_batch['trans_1'][0]  # [N, 3]
+
+                # 获取 Mask
+                # 注意：如果使用了 update_mask，最好只看 update 的部分，或者看全部 res_mask
+                # 这里使用 res_mask 看整体结构
+                mask = noisy_batch['res_mask'][0]  # [N]
+
+                # 2. 调用绘图
+                self.log_ca_distance_map_wandb(pred_ca, gt_ca, mask, self.global_step)
+
+                # [Debug Start]
+                pred_mean = pred_ca.mean(dim=(0, 1))
+                gt_mean = gt_ca.mean(dim=(0, 1))
+                pred_abs_mean = pred_ca.abs().mean()
+                gt_abs_mean = gt_ca.abs().mean()
+
+                print(f"\n[DEBUG CHECK]")
+                print(f"GT Center: {gt_mean.tolist()} (Should be near 0)")
+                print(f"Pred Center: {pred_mean.tolist()} (Should be near 0)")
+                print(f"GT Scale (Abs Mean): {gt_abs_mean.item():.2f} (Typical: 15-30)")
+                print(f"Pred Scale (Abs Mean): {pred_abs_mean.item():.2f}")
+
+            except Exception as e:
+                print(f"[Warning] Failed to log distance map: {e}")
+        # ==========================================================
+
+
+        pred_ca = outs["x_hat"][0]
+
+        # # 获取 Pred CA (Translation)
+        # if hasattr(r_pred, "get_trans"):
+        #     pred_ca = r_pred.get_trans()[0]  # [N, 3]
+        # else:
+        #     pred_ca = r_pred.trans[0]
+
+        # 获取 GT CA (必须是去中心化后的 noisy_batch['trans_1'])
+        gt_ca = noisy_batch['trans_1'][0]  # [N, 3]
+
+        # 获取 Mask
+        # 注意：如果使用了 update_mask，最好只看 update 的部分，或者看全部 res_mask
+        # 这里使用 res_mask 看整体结构
+        mask = noisy_batch['res_mask'][0]  # [N]
+
+
+
+        # [Debug Start]
+        pred_mean = pred_ca.mean(dim=(0, 1))
+        gt_mean = gt_ca.mean(dim=(0, 1))
+        pred_abs_mean = pred_ca.abs().mean()
+        gt_abs_mean = gt_ca.abs().mean()
+
+        ca_metric={
+            "pred_mean":pred_mean,
+            "gt_mean":gt_mean,
+            "Pred Scale":pred_abs_mean,
+            "GT Scale":gt_abs_mean,
+        }
+
 
         # Calculate loss using IGA Loss
-        metrics = self.iga_loss_fn(outs, batch, noisy_batch)
+        metrics = seg_ae_losses(x_gt=noisy_batch['trans_1'],node_mask=noisy_batch['res_mask'],**outs)
+        metrics = metrics |ca_metric|downmetric
 
         if return_outputs:
             # 返回 metrics 和 outputs（用于 validation 保存结构）
@@ -1148,9 +1276,9 @@ class FlowModule(LightningModule):
             elif self._exp_cfg.task in ('fbb',):
                 # 如果需要保存样本，则获取模型输出
                 if save_samples:
-                    batch_losses, outs, noisy_batch = self.model_step_fbb(batch, prob=1, return_outputs=True)
+                    batch_losses, outs, noisy_batch = self.model_step_fbb(batch, prob=0, return_outputs=True)
                 else:
-                    batch_losses = self.model_step_fbb(batch, prob=1, return_outputs=False)
+                    batch_losses,_ = self.model_step_fbb(batch, prob=0, return_outputs=False)
 
             elif self._exp_cfg.task in ('shfbb',):
                 batch_losses = self.model_step_shfbb(batch, prob=1)
@@ -1713,7 +1841,7 @@ class FlowModule(LightningModule):
                     self.model,
                 )
         # Calculate loss using IGA Loss
-        metrics = self.iga_loss_fn(sample_out['out'], batch, prepared_batch)
+        metrics = self.iga_loss_fn(sample_out['out'],prepared_batch)
         logits = sample_out['logits_final']
         atoms14_local = sample_out['atoms14_local_final']
 

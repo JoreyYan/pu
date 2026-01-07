@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import numpy as np
 from models.IGA import fused_gaussian_overlap_score,compute_robust_nll_components,analytical_inverse_3x3
 import torch.nn as nn
+import matplotlib.pyplot as plt
 def huber(x, y, mask=None, delta=1.0, reduction='mean'):
     diff = x - y
     if mask is not None:
@@ -632,9 +633,9 @@ class BackboneGaussianAutoEncoderLoss(nn.Module):
     def __init__(
         self,
         w_mse: float = 1.0,
-            w_ca_trans: float = 1.0,
+            w_ca_trans: float = 0.5,
         w_pair_intra: float = 0.5,  # [原有] 局部刚体几何 (Residue内部)
-        w_pair_global: float = 1.0,  # [新增] 全局拓扑 (DRMSD, 所有 CA-CA 距离)
+        w_pair_global: float = 0.5,  # [新增] 全局拓扑 (DRMSD, 所有 CA-CA 距离)
         w_gauss_nll: float = 0.0,   # 建议先 0，等坐标能降再开
         w_mu_anchor: float = 0.0,   # debug 用：mu_pred 贴近 CA_gt（很小即可，如 1e-3）
         w_reg: float = 10.0,
@@ -650,9 +651,83 @@ class BackboneGaussianAutoEncoderLoss(nn.Module):
         self.w_reg = w_reg
         self.eps = eps
 
-    def forward(self, outs, batch, noisy_batch):
+    def forward(self, outs, noisy_batch):
+        # 1. 准备 Mask
+        res_mask = noisy_batch["res_mask"].float()  # [B,N]
+        update_mask = noisy_batch.get("update_mask", res_mask).float()
+        m_res = res_mask * update_mask  # [B,N]
+        denom = m_res.sum().clamp_min(1.0)
+
+        # 2. 获取 GT CA 坐标
+        # [B,N,4,3] -> [B,N,3] (取第2个原子，即CA)
+        gt_ca = noisy_batch["atom14_gt_positions"][..., 1, :]
+
+        # 3. 获取 Pred CA 坐标 (严格来自高斯参数)
+        assert "final_gaussian" in outs, "outs 需要包含 final_gaussian"
+        r = outs["final_gaussian"]
+
+        # 优先使用 get_trans，兼容不同接口
+        if hasattr(r, "get_trans"):
+            pred_ca = r.get_trans()
+        elif hasattr(r, "trans"):
+            pred_ca = r.trans
+        elif hasattr(r, "_trans"):
+            pred_ca = r._trans
+        else:
+            raise AttributeError("final_gaussian 缺少 trans 相关属性")
+
+        # ---------------------------------------------------------
+        # (1) CA Translation Loss (绝对坐标 MSE)
+        # ---------------------------------------------------------
+        # 计算 MSE
+        err = (pred_ca - gt_ca) * m_res.unsqueeze(-1)
+        # denom * 3.0 是为了对 x,y,z 维度进行平均
+        bb_ca_trans = (err.square().sum(dim=-1).sum()) / (denom * 3.0)
+
+        # ---------------------------------------------------------
+        # (2) Global Pairwise Distance (全局拓扑 / DRMSD) - CA Only
+        # ---------------------------------------------------------
+        # 使用刚才提取的 pred_ca 和 gt_ca 计算距离矩阵
+
+        # Pred Distance Matrix [B, N, N]
+        diff_pred = pred_ca.unsqueeze(2) - pred_ca.unsqueeze(1)
+        dist_pred = torch.sqrt((diff_pred ** 2).sum(dim=-1) + 1e-8)
+
+        # GT Distance Matrix [B, N, N]
+        diff_gt = gt_ca.unsqueeze(2) - gt_ca.unsqueeze(1)
+        dist_gt = torch.sqrt((diff_gt ** 2).sum(dim=-1) + 1e-8)
+
+        # Mask 处理 [B, N, N]
+        mask_2d = m_res.unsqueeze(1) * m_res.unsqueeze(2)
+        denom_2d = mask_2d.sum().clamp(min=1.0)
+
+        # 计算 Loss
+        error_map = (dist_pred - dist_gt) ** 2
+        bb_pair_global = (error_map * mask_2d).sum() / denom_2d
+
+        # ---------------------------------------------------------
+        # (3) Regularization (保持原有正则项)
+        # ---------------------------------------------------------
+        reg = outs.get("reg_total", torch.tensor(0.0, device=pred_ca.device))
+
+        # ---------------------------------------------------------
+        # 总 Loss 聚合
+        # ---------------------------------------------------------
+        loss = (
+                self.w_ca_trans * bb_ca_trans +  # 绝对位置约束
+                self.w_pair_global * bb_pair_global +  # 相对形状约束 (非常建议保留)
+                self.w_reg * reg
+        )
+
+        return {
+            "loss": loss,
+            "ca_mse": bb_ca_trans.detach(),  # 监控绝对坐标误差
+            "bb_pair_global": bb_pair_global.detach(),  # 监控形状误差
+            "reg_total": reg.detach(),
+        }
+    def forwardfull(self, outs,  noisy_batch):
         pred = outs["pred_atoms_global"]  # [B,N,4,3] Å
-        gt = batch["atom14_gt_positions"][..., :4, :]  # [B,N,4,3] N/CA/C/O
+        gt = noisy_batch["atom14_gt_positions"][..., :4, :]  # [B,N,4,3] N/CA/C/O
 
         res_mask = noisy_batch["res_mask"].float()              # [B,N]
         update_mask = noisy_batch.get("update_mask", res_mask).float()
@@ -782,6 +857,14 @@ class BackboneGaussianAutoEncoderLoss(nn.Module):
             err = (pred_trans - gt_ca) * m_res.unsqueeze(-1)  # [B,N,3]
             bb_ca_trans = (err.square().sum(dim=-1).sum()) / (denom * 3.0)
 
+            err_ca = (pred_ca - gt_ca) * m_res.unsqueeze(-1)  # [B,N,3]
+            bb_ca_pred = (err_ca.square().sum(dim=-1).sum()) / (denom * 3.0)
+
+
+
+
+
+
         loss = (
             # self.w_mse * bb_mse +
             self.w_pair_intra * bb_pair_intra +
@@ -796,6 +879,7 @@ class BackboneGaussianAutoEncoderLoss(nn.Module):
             "loss": loss,
             "bb_mse": bb_mse.detach(),
             "ca_mse": bb_ca_trans.detach(),
+            "bb_ca_pred":bb_ca_pred.detach(),
             "bb_pair_intra": bb_pair_intra.detach(),
             "bb_pair_global": bb_pair_global.detach(), # 监控这个指标
             "gauss_nll": gauss_nll.detach(),

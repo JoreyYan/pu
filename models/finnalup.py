@@ -1,7 +1,7 @@
 
 from dataclasses import dataclass
 from typing import Optional, Tuple, Dict
-
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,6 +17,7 @@ from models.pool import coarse_rigids_from_mu_sigma,fps_points_batch
 from models.IGA import InvariantGaussianAttention,CoarseIGATower,GaussianUpdateBlock,fused_gaussian_overlap_score
 from chroma.layers.basic import FourierFeaturization
 from models.EdgeCoarsen import CoarseEdgeCoarsenAndFuse
+from models.pool import segment_pos01_from_assignment,Pos01FourierEncoder
 
 class ResIdxFourierEmbedding(nn.Module):
     """
@@ -476,27 +477,27 @@ class FinalCoarseToFineDensenSampleIGAModule(nn.Module):
             mask_f=node_mask, mask_c=mask_parent
         )
 
-        ang_rigids = r0.scale_translation(10.0)  # 0.1
-
-        # pooling 得到 r_c / mask_c 后
-        save_gaussian_as_pdb(
-            gaussian_rigid=ang_rigids,
-            filename=f"debug__up_r0.pdb",
-            mask=node_mask,
-            center_mode="gaussian_mean",
-        )
+        # ang_rigids = r0.scale_translation(10.0)  # 0.1
+        #
+        # # pooling 得到 r_c / mask_c 后
+        # save_gaussian_as_pdb(
+        #     gaussian_rigid=ang_rigids,
+        #     filename=f"debug__up_r0.pdb",
+        #     mask=node_mask,
+        #     center_mode="gaussian_mean",
+        # )
         # ---- refine ----
         s1, r1,z1 = self.refine_tower(s0, r0, node_mask,z_c)
 
-        ang_rigids = r1.scale_translation(10.0)  # 0.1
-
-        # pooling 得到 r_c / mask_c 后
-        save_gaussian_as_pdb(
-            gaussian_rigid=ang_rigids,
-            filename=f"debug__up_r1.pdb",
-            mask=node_mask,
-            center_mode="gaussian_mean",
-        )
+        # ang_rigids = r1.scale_translation(10.0)  # 0.1
+        #
+        # # pooling 得到 r_c / mask_c 后
+        # save_gaussian_as_pdb(
+        #     gaussian_rigid=ang_rigids,
+        #     filename=f"debug__up_r1.pdb",
+        #     mask=node_mask,
+        #     center_mode="gaussian_mean",
+        # )
 
 
         levels = [{
@@ -773,8 +774,9 @@ def _sample_inside_parent(
 @dataclass
 class UpAux:
     w_parent: torch.Tensor  # [B,N,K]
-    pi: torch.Tensor        # [B,K]
+    # pi: torch.Tensor        # [B,K]
     parent_idx: torch.Tensor  # [B,N]
+    debug:dict
 
 
 # =========================================================
@@ -981,3 +983,1032 @@ class FinalCoarseToFineDensenSampleIGAModulev2(nn.Module):
 
         reg_total = torch.tensor(0.0, device=device, dtype=dtype)
         return levels, reg_total
+
+
+
+
+
+class FinalCoarseToFineDensenSampleIGAModulev3(nn.Module):
+    """
+    v3 Up-sampling (ordered / identity-safe):
+      - Router: w = Attn( Q(s_trunk_detach), K(s_parent, mu_p) )
+      - Ordered init:
+          s0 = w @ V(s_parent)
+          mu0 = w @ mu_p (+ optional delta from parent features)
+          Sig0 = beta*(w @ Sig_p) + (1-beta)*Sig_spacing(mu0)
+      - Edge fuse with A=w
+      - IGA refinement tower (unchanged)
+    """
+
+    def __init__(
+        self,
+        c_s: int,
+        iga_conf,
+        OffsetGaussianRigid_cls,
+        num_refine_layers: int = 6,
+
+        # ---- spacing sigma knobs (keep from v2) ----
+        fps_knn: int = 8,
+        sigma_cover_alpha: float = 1.5,
+        sigma_floor: float = 1e-3,
+        sigma_ceil: float = 1e2,
+        jitter: float = 1e-6,
+
+        # ---- parent-child sigma blend ----
+        beta_parent_sigma: float = 0.85,
+        parent_sigma_shrink: float = 1.0,
+
+        # ---- router knobs ----
+        use_ln: bool = True,
+        tau_init: float = 0.1,          # softmax temperature
+        w_clip_min: float = 0.0,        # optional floor (usually 0)
+
+        # ---- optional regularizers ----
+        lambda_route_smooth: float = 0.1,    # KL(w_i||w_{i+1}) weight
+        lambda_route_collapse: float = 0.1,  # column-corr / coverage weight
+
+        # ---- optional mu offset (helps avoid all kids at parent center) ----
+        enable_mu_offset: bool = True,
+        mu_offset_scale: float = 0.25,       # small init scale
+    ):
+        super().__init__()
+        self.c_s = c_s
+        self.OffsetGaussianRigid_cls = OffsetGaussianRigid_cls
+
+        # sigma / spacing
+        self.fps_knn = int(fps_knn)
+        self.sigma_cover_alpha = float(sigma_cover_alpha)
+        self.sigma_floor = float(sigma_floor)
+        self.sigma_ceil = float(sigma_ceil)
+        self.jitter = float(jitter)
+
+        self.beta_parent_sigma = float(beta_parent_sigma)
+        self.parent_sigma_shrink = float(parent_sigma_shrink)
+
+        # router
+        self.tau_init = float(tau_init)
+        self.w_clip_min = float(w_clip_min)
+        self.lambda_route_smooth = float(lambda_route_smooth)
+        self.lambda_route_collapse = float(lambda_route_collapse)
+
+        self.use_ln = bool(use_ln)
+        if self.use_ln:
+            self.ln_q = nn.LayerNorm(c_s)
+            self.ln_k = nn.LayerNorm(c_s)
+            self.ln_v = nn.LayerNorm(c_s)
+
+        # Q from s_trunk, K/V from s_parent, plus position bias from mu_p
+        self.q_proj = nn.Linear(c_s, c_s, bias=False)
+        self.k_proj = nn.Linear(c_s, c_s, bias=False)
+        self.v_proj = nn.Linear(c_s, c_s, bias=False)
+        self.pos_proj = nn.Linear(3, c_s, bias=False)
+
+        # optional mu offset head (from aggregated parent feature)
+        self.enable_mu_offset = bool(enable_mu_offset)
+        if self.enable_mu_offset:
+            self.mu_offset = nn.Sequential(
+                nn.LayerNorm(c_s),
+                nn.Linear(c_s, c_s),
+                nn.SiLU(),
+                nn.Linear(c_s, 3),
+            )
+            # small init helps stability
+            with torch.no_grad():
+                self.mu_offset[-1].weight.mul_(self.mu_offset_scale if hasattr(self, "mu_offset_scale") else 0.0)
+            self.mu_offset_scale = float(mu_offset_scale)
+
+        # Edge fuser (UP mode)
+        self.edge_fusers = CoarseEdgeCoarsenAndFuse(
+            c_z_in=getattr(iga_conf, "hgfc_z", 0),
+            c_z_out=getattr(iga_conf, "hgfc_z", 0),
+            mode="up",
+        )
+
+        # IGA refinement tower (same as v2)
+        iga = InvariantGaussianAttention(
+            c_s=c_s,
+            c_z=getattr(iga_conf, "hgfc_z", 0),
+            c_hidden=iga_conf.c_hidden,
+            no_heads=iga_conf.no_heads,
+            no_qk_gaussians=iga_conf.no_qk_points,
+            no_v_points=iga_conf.no_v_points,
+            layer_idx=9001,
+            enable_vis=False,
+        )
+        gau_update = GaussianUpdateBlock(c_s)
+        self.refine_tower = CoarseIGATower(
+            iga=iga,
+            gau_update=gau_update,
+            c_s=c_s,
+            hgfc_z=iga_conf.hgfc_z,
+            num_layers=num_refine_layers,
+        )
+    @staticmethod
+    def _w_flip_rate(w: torch.Tensor, node_mask: torch.Tensor) -> torch.Tensor:
+        """
+        相邻残基 parent argmax 切换率。
+        w: [B,N,K], node_mask: [B,N] (0/1)
+        return: scalar tensor
+        """
+        # hard assignment
+        a = torch.argmax(w, dim=-1)  # [B,N]
+        # valid adjacent pairs
+        m = (node_mask[:, :-1] > 0.5) & (node_mask[:, 1:] > 0.5)  # [B,N-1]
+        diff = (a[:, :-1] != a[:, 1:]) & m
+        denom = m.sum().clamp_min(1)
+        return diff.sum().float() / denom.float()
+
+    @staticmethod
+    def _w_entropy(w: torch.Tensor, node_mask: torch.Tensor, eps: float = 1e-9) -> torch.Tensor:
+        """
+        平均熵（只统计有效 residue）。
+        H(w_i) = -Σ_k w_i,k log w_i,k
+        """
+        m = (node_mask > 0.5).float()  # [B,N]
+        p = w.clamp_min(eps)
+        h = -(p * p.log()).sum(dim=-1)  # [B,N]
+        denom = m.sum().clamp_min(1.0)
+        return (h * m).sum() / denom
+
+    @staticmethod
+    def _w_top1_mean(w: torch.Tensor, node_mask: torch.Tensor) -> torch.Tensor:
+        """
+        每个 residue 的 top1 概率平均值（衡量 w 是否很尖）。
+        """
+        m = (node_mask > 0.5).float()
+        top1 = w.max(dim=-1).values  # [B,N]
+        denom = m.sum().clamp_min(1.0)
+        return (top1 * m).sum() / denom
+
+    @staticmethod
+    def _w_column_stats(w: torch.Tensor, node_mask: torch.Tensor) -> dict:
+        """
+        统计列占用情况：w_sum[k] = Σ_i w[i,k]
+        返回几个标量：有效 parent 数、top1列占比、Gini-like 等
+        """
+        # w_sum: [B,K]
+        m = (node_mask > 0.5).float().unsqueeze(-1)  # [B,N,1]
+        w_sum = (w * m).sum(dim=1)  # [B,K]
+        # normalize per batch for interpretability
+        w_norm = w_sum / w_sum.sum(dim=-1, keepdim=True).clamp_min(1e-9)  # [B,K]
+
+        # 有效 parent 数：权重大于阈值的列数（阈值按 1/K 的比例）
+        B, K = w_norm.shape
+        thr = (1.0 / max(K, 1)) * 0.5
+        active = (w_norm > thr).sum(dim=-1).float().mean()  # scalar
+
+        # 最大列占比（越大越塌缩）
+        top_col = w_norm.max(dim=-1).values.mean()
+
+        # 简单“集中度”指标：sum(p^2)（越大越集中）
+        conc = (w_norm ** 2).sum(dim=-1).mean()
+
+        return {
+            "w_active_cols": active,   # 越大越分散
+            "w_top_col": top_col,      # 越大越塌缩
+            "w_col_conc": conc,        # 越大越塌缩
+        }
+    @staticmethod
+    def _route_smooth_kl(w: torch.Tensor, node_mask: torch.Tensor, eps: float = 1e-9) -> torch.Tensor:
+        """
+        KL(w_i || w_{i+1}) along sequence. w: [B,N,K]
+        """
+        # valid pairs
+        m0 = node_mask[:, :-1].float()
+        m1 = node_mask[:, 1:].float()
+        mp = (m0 * m1).unsqueeze(-1)  # [B,N-1,1]
+
+        p = w[:, :-1].clamp_min(eps)
+        q = w[:, 1:].clamp_min(eps)
+        kl = (p * (p.log() - q.log())).sum(dim=-1)  # [B,N-1]
+        kl = kl * (m0 * m1)
+        denom = (m0 * m1).sum().clamp_min(1.0)
+        return kl.sum() / denom
+
+    @staticmethod
+    def _route_collapse_corr(w: torch.Tensor, node_mask: torch.Tensor, eps: float = 1e-9) -> torch.Tensor:
+        """
+        Simple anti-collapse: column correlation of assignment matrix.
+        Encourage columns to be less correlated.
+        w: [B,N,K]
+        """
+        B, N, K = w.shape
+        m = node_mask.float().unsqueeze(-1)  # [B,N,1]
+        x = w * m
+        # center over N
+        denom = m.sum(dim=1, keepdim=True).clamp_min(1.0)
+        mean = x.sum(dim=1, keepdim=True) / denom
+        xc = x - mean
+        # cov: [B,K,K]
+        cov = torch.einsum("bnk,bnj->bkj", xc, xc) / denom.squeeze(1).clamp_min(1.0).unsqueeze(-1)
+        # normalize to corr
+        var = torch.diagonal(cov, dim1=-2, dim2=-1).clamp_min(eps)  # [B,K]
+        inv_std = var.rsqrt()
+        corr = cov * inv_std[:, :, None] * inv_std[:, None, :]
+        # penalize off-diagonal corr^2
+        eye = torch.eye(K, device=w.device, dtype=w.dtype)[None]
+        off = (corr * (1 - eye)) ** 2
+        return off.mean()
+
+    def forward(
+        self,
+        s_parent: torch.Tensor,                 # [B,K,C]
+        z_parent,                               # None or tensor (edge)
+        r_parent,                               # OffsetGaussianRigid [B,K]
+        mask_parent: torch.Tensor,              # [B,K]
+        node_mask: torch.Tensor,                # [B,N]
+        s_trunk: torch.Tensor,                  # [B,N,C]  <<<< V3 新增
+        occ_parent: Optional[torch.Tensor] = None,  # [B,K] optional
+        res_idx: Optional[torch.Tensor] = None,     # optional, V3 不强依赖
+        tau: Optional[float] = None,                # optional override
+    ):
+        B, K, C = s_parent.shape
+        N = node_mask.shape[1]
+        device, dtype = s_parent.device, s_parent.dtype
+
+        mu_p = r_parent.get_gaussian_mean()      # [B,K,3]
+        Sig_p = r_parent.get_covariance()        # [B,K,3,3]
+        Sig_p = _sym(Sig_p)  # safety
+
+        # ---- pi from occ (optional, used as mild bias/normalizer if you want later) ----
+        if occ_parent is None:
+            pi = torch.ones((B, K), device=device, dtype=dtype)
+        else:
+            pi = occ_parent.to(dtype=dtype)
+        pi = pi * (mask_parent > 0.5).to(dtype)
+        pi = pi / pi.sum(dim=-1, keepdim=True).clamp_min(1e-9)
+
+        # ==========================================================
+        # 1) Router: compute w [B,N,K] (ORDERED by residue index)
+        # ==========================================================
+        s_trunk_detached = s_trunk.detach()
+
+        if self.use_ln:
+            q_in = self.ln_q(s_trunk_detached)
+            k_in = self.ln_k(s_parent)
+            v_in = self.ln_v(s_parent)
+        else:
+            q_in, k_in, v_in = s_trunk_detached, s_parent, s_parent
+
+        q = self.q_proj(q_in)                                   # [B,N,C]
+        k = self.k_proj(k_in) + self.pos_proj(mu_p)             # [B,K,C]
+        v = self.v_proj(v_in)                                   # [B,K,C]
+
+        logits = torch.einsum("bnc,bkc->bnk", q, k)              # [B,N,K]
+        temp = float(self.tau_init if tau is None else tau)
+        logits = logits / max(temp, 1e-6)
+
+        # mask parents + residues
+        logits = logits.masked_fill(mask_parent[:, None, :] <= 0.5, -1e9)
+        logits = logits.masked_fill(node_mask[:, :, None] <= 0.5, -1e9)
+
+        w = F.softmax(logits, dim=-1)                            # [B,N,K]
+        # if self.w_clip_min > 0:
+        #     w = w.clamp_min(self.w_clip_min)
+        #     w = w / w.sum(dim=-1, keepdim=True).clamp_min(1e-9)
+
+        # ensure padded rows are exactly 0
+        w = w * node_mask[:, :, None].to(dtype)
+
+        # ---- DEBUG stats (cheap) ----
+        with torch.no_grad():
+            w_flip = self._w_flip_rate(w, node_mask)  # 相邻切换率
+            w_ent = self._w_entropy(w, node_mask)  # 平均熵
+            w_top1 = self._w_top1_mean(w, node_mask)  # top1均值
+            col_stats = self._w_column_stats(w, node_mask)  # 列占用/塌缩
+
+        # ==========================================================
+        # 2) Ordered init: s0, mu0, Sig_parent_child
+        # ==========================================================
+        s0 = torch.einsum("bnk,bkc->bnc", w, v)                  # [B,N,C]
+        mu0 = torch.einsum("bnk,bkd->bnd", w, mu_p)              # [B,N,3]
+
+        # optional per-residue offset from aggregated parent feature (NOT from q)
+        if self.enable_mu_offset:
+            parent_feat = torch.einsum("bnk,bkc->bnc", w, s_parent)  # [B,N,C]
+            delta = self.mu_offset(parent_feat) * self.mu_offset_scale
+            mu0 = mu0 + delta
+
+        mu0 = mu0 * node_mask[..., None].to(dtype)
+
+        # weighted parent Sigma (soft inherit)
+        Sig_parent_child = torch.einsum("bnk,bkij->bnij", w, Sig_p * self.parent_sigma_shrink)
+        I = torch.eye(3, device=device, dtype=dtype)[None, None]
+        Sig_parent_child = _sym(Sig_parent_child) + max(self.jitter, 1e-6) * I
+
+        # ==========================================================
+        # 3) Spacing Sigma + blend (keep v2 spirit)
+        # ==========================================================
+        Sig_spacing = init_sigma_from_child_spacing(
+            mu0, node_mask,
+            k_nn=self.fps_knn,
+            alpha=self.sigma_cover_alpha,
+            sigma_floor=self.sigma_floor,
+            sigma_ceil=self.sigma_ceil,
+            jitter=max(self.jitter, 1e-6),
+        )  # [B,N,3,3]
+
+        beta = self.beta_parent_sigma
+        Sig0 = beta * Sig_parent_child + (1.0 - beta) * Sig_spacing
+        Sig0 = _sym(Sig0) + max(self.jitter, 1e-6) * I
+        Sig0 = Sig0 * node_mask[:, :, None, None].to(dtype)
+
+        # ==========================================================
+        # 4) Build residue rigids
+        # ==========================================================
+        r0 = coarse_rigids_from_mu_sigma(mu0, Sig0, self.OffsetGaussianRigid_cls)
+
+        # ==========================================================
+        # 5) Edge fuse using A=w (huge win vs v2 back-infer)
+        # ==========================================================
+        if self.edge_fusers is not None and (z_parent is not None):
+            z_c, Z_sem_c, Z_geo_c = self.edge_fusers(
+                A=w, Z_in=z_parent, r_target=r0,
+                mask_f=node_mask, mask_c=mask_parent
+            )
+        else:
+            z_c = None
+
+        # ==========================================================
+        # 6) Refine (unchanged)
+        # ==========================================================
+        s1, r1, z1 = self.refine_tower(s0, r0, node_mask, z_c)
+
+        # ==========================================================
+        # 7) Regularizers (optional)
+        # ==========================================================
+        reg_total = torch.tensor(0.0, device=device, dtype=dtype)
+        if self.lambda_route_smooth > 0:
+            reg_total = reg_total + self.lambda_route_smooth * self._route_smooth_kl(w, node_mask)
+        if self.lambda_route_collapse > 0:
+            reg_total = reg_total + self.lambda_route_collapse * self._route_collapse_corr(w, node_mask)
+
+        # ----------------------------------------------------------
+        # 【新增】防塌缩核心 Loss (Anti-Collapse Kit)
+        # ----------------------------------------------------------
+
+        # A. 最小化熵 (MinEntropy) —— 拒绝“平均主义”
+        # 作用：强迫 w 变得尖锐 (接近 One-Hot)。
+        # 原理：如果 w 很软 (0.1, 0.1...), mu0 就会被拉向原点。如果 w 尖锐 (1, 0...), mu0 就跳到父节点位置。
+        w_eps = w.clamp(min=1e-9)
+        entropy = -(w * w_eps.log()).sum(dim=-1)  # [B, N]
+        # 只统计有效节点
+        mask_sum = node_mask.sum().clamp_min(1.0)
+        loss_entropy = (entropy * node_mask).sum() / mask_sum
+
+        # B. 负载均衡 (LoadBalance) —— 拒绝“赢家通吃”
+        # 作用：强迫所有父节点都被用到。
+        # 原理：一旦 Entropy 变低，模型很容易所有点都选同一个父节点。这个 Loss 强迫它分散。
+        usage = w.mean(dim=1)  # [B, K] 平均每个父节点分到了多少比例的子节点
+        target_usage = torch.ones_like(usage) / max(K, 1)  # 目标：大家均分
+        loss_balance = F.mse_loss(usage, target_usage)
+
+        # C. 全局尺度惩罚 (Scale Hinge Loss) —— 暴力撑开
+        # 作用：直接告诉模型，如果你生成的直径太小，就要受罚。
+        # 这是最直接救 Pred Scale 的手段。
+        # 计算当前预测的 Scale (以 Batch 为单位的平均回转半径)
+        center = mu0.mean(dim=1, keepdim=True)
+        dist = (mu0 - center).norm(dim=-1)  # [B, N]
+        current_scale = (dist * node_mask).sum(dim=1) / mask_sum  # [B]
+        # 目标 Scale: 设一个合理的下限，比如 10.0 (Angstrom)
+        # 如果小于 10，就惩罚；大于 10，不惩罚。
+        loss_scale_hinge = F.relu(0.5 - current_scale).mean()
+
+        # ----------------------------------------------------------
+        # 【权重建议】
+        # Balance: 0.1 ~ 0.5 (必须够大，防止 Mode Collapse)
+        # Entropy: 0.01 ~ 0.05 (辅助变尖)
+        # Scale:   1.0 (前期强力撑开，Scale 正常后这个 Loss 会自动变 0)
+        # ----------------------------------------------------------
+
+        # 将这些加到 reg_total 里
+        reg_total = reg_total + 0.5 * loss_balance + 0.1 * loss_entropy + 2.0 * loss_scale_hinge
+
+
+
+        # parent_idx: soft router doesn't have hard parent_idx; store argmax for logging/debug
+        parent_idx = torch.argmax(w, dim=-1)  # [B,N]
+
+        aux_debug = {
+            "w_flip": w_flip,
+            "w_entropy": w_ent,
+            "w_top1": w_top1,
+            **col_stats,
+        }
+
+        levels = [{
+            "s0": s0,
+            "mu0": mu0,
+            "Sigma0": Sig0,
+            "r0": r0,
+            "s": s1,
+            "z": z1,
+            "r": r1,
+            "mask": node_mask,
+            "aux": UpAux(w_parent=w, pi=pi, parent_idx=parent_idx, debug=aux_debug)
+        }]
+
+        return levels, reg_total
+
+
+# =========================================================================
+# V3.2 核心模块
+# =========================================================================
+class FinalCoarseToFineDensenSampleIGAModulev3_2(nn.Module):
+    """
+    V3.2 Robust Up-sampling Module
+    ------------------------------
+    Key Features:
+    1. Hard Gumbel Routing: Prevents averaging collapse (points stuck in center).
+    2. Scaled Offset Gen: Predicts relative position within parent volume.
+    3. Numerical Safety: Uses diagonal scale instead of Cholesky.
+    4. Built-in Reg: Includes LoadBalance and ScaleHinge losses.
+    """
+
+    def __init__(
+            self,
+            c_s: int,
+            iga_conf,
+            OffsetGaussianRigid_cls,
+            num_refine_layers: int = 6,
+
+            # ---- Spacing / Sigma Knobs ----
+            fps_knn: int = 8,
+            sigma_cover_alpha: float = 1.5,
+            sigma_floor: float = 1e-3,
+            sigma_ceil: float = 1e2,
+            jitter: float = 1e-6,
+
+            # ---- Parent-Child Blend ----
+            beta_parent_sigma: float = 0.85,
+            parent_sigma_shrink: float = 1.0,
+
+            # ---- Router Knobs ----
+            use_ln: bool = True,
+            tau_init: float = 1.0,  # Gumbel temperature (start high, e.g., 1.0)
+
+            # ---- Generator Knobs ----
+            delta_scale: float = 1.0,  # Scale multiplier for predicted offset
+    ):
+        super().__init__()
+        self.c_s = c_s
+        self.OffsetGaussianRigid_cls = OffsetGaussianRigid_cls
+
+        # Sigma parameters
+        self.fps_knn = int(fps_knn)
+        self.sigma_cover_alpha = float(sigma_cover_alpha)
+        self.sigma_floor = float(sigma_floor)
+        self.sigma_ceil = float(sigma_ceil)
+        self.jitter = float(jitter)
+        self.beta_parent_sigma = float(beta_parent_sigma)
+        self.parent_sigma_shrink = float(parent_sigma_shrink)
+        self.delta_scale = float(delta_scale)
+
+        # Router parameters
+        self.tau_init = float(tau_init)
+        self.use_ln = bool(use_ln)
+
+        # -------------------------------------------------------
+        # 1. Router Components (Simplified Cross Attention)
+        # -------------------------------------------------------
+        if self.use_ln:
+            self.ln_q = nn.LayerNorm(c_s)
+            self.ln_k = nn.LayerNorm(c_s)
+            self.ln_v = nn.LayerNorm(c_s)
+
+        # Q comes from s_trunk (Child), K/V come from s_parent
+        self.q_proj = nn.Linear(c_s, c_s, bias=False)
+        self.k_proj = nn.Linear(c_s, c_s, bias=False)
+        self.v_proj = nn.Linear(c_s, c_s, bias=False)
+        self.pos_proj = nn.Linear(3, c_s, bias=False)  # Positional bias for parents
+
+        # -------------------------------------------------------
+        # 2. Generator Components (Offset & Scale Prediction)
+        # -------------------------------------------------------
+        # Input: Concat[s_trunk, s_parent_selected] -> 2 * c_s
+        # Predicts relative offset in local frame (approx -1 to 1)
+        self.delta_head = nn.Sequential(
+            nn.LayerNorm(2 * c_s),
+            nn.Linear(2 * c_s, c_s),
+            nn.GELU(),
+            nn.Linear(c_s, 3),
+            nn.Tanh()  # [Vital] Prevents points from flying to infinity
+        )
+
+        # Optional: Predict log-scale update for sigma
+        self.logscale_head = nn.Sequential(
+            nn.LayerNorm(2 * c_s),
+            nn.Linear(2 * c_s, c_s),
+            nn.GELU(),
+            nn.Linear(c_s, 3),
+            nn.Tanh()  # Limit scaling factor range
+        )
+
+        # -------------------------------------------------------
+        # 3. Refine Tower & Utils (Existing infrastructure)
+        # -------------------------------------------------------
+        self.edge_fusers = CoarseEdgeCoarsenAndFuse(
+            c_z_in=getattr(iga_conf, "hgfc_z", 0),
+            c_z_out=getattr(iga_conf, "hgfc_z", 0),
+            mode="up",
+        )
+
+        # IGA Tower setup
+        iga = InvariantGaussianAttention(
+            c_s=c_s,
+            c_z=getattr(iga_conf, "hgfc_z", 0),
+            c_hidden=iga_conf.c_hidden,
+            no_heads=iga_conf.no_heads,
+            no_qk_gaussians=iga_conf.no_qk_points,
+            no_v_points=iga_conf.no_v_points,
+            layer_idx=9000,
+            enable_vis=False,
+        )
+        gau_update = GaussianUpdateBlock(c_s)
+        self.refine_tower = CoarseIGATower(
+            iga=iga,
+            gau_update=gau_update,
+            c_s=c_s,
+            hgfc_z=iga_conf.hgfc_z,
+            num_layers=num_refine_layers,
+        )
+
+    def forward(
+            self,
+            s_parent: torch.Tensor,  # [B,K,C]
+            z_parent: Optional[torch.Tensor],  # [B,K,K,Cz]
+            r_parent,  # OffsetGaussianRigid [B,K]
+            mask_parent: torch.Tensor,  # [B,K]
+            node_mask: torch.Tensor,  # [B,N]
+            s_trunk: torch.Tensor,  # [B,N,C] (Child Query)
+            tau: Optional[float] = None,  # Temperature override
+            **kwargs
+    ):
+        B, K, C = s_parent.shape
+        N = node_mask.shape[1]
+        device, dtype = s_parent.device, s_parent.dtype
+        eps = 1e-6  # Numerical safety
+
+        # Extract parent geometry
+        mu_p = r_parent.get_gaussian_mean()  # [B,K,3]
+        Sig_p = r_parent.get_covariance()  # [B,K,3,3]
+        Sig_p = _sym(Sig_p)  # Enforce symmetry
+
+        # ==========================================================
+        # 1. Robust Routing (Gumbel-Softmax)
+        # ==========================================================
+        # Stop gradient on trunk for router stability (optional but rec.)
+        s_trunk_detached = s_trunk.detach()
+
+        # Projections
+        if self.use_ln:
+            q = self.q_proj(self.ln_q(s_trunk_detached))
+            k = self.k_proj(self.ln_k(s_parent)) + self.pos_proj(mu_p)
+            v = self.v_proj(self.ln_v(s_parent))
+        else:
+            q = self.q_proj(s_trunk_detached)
+            k = self.k_proj(s_parent) + self.pos_proj(mu_p)
+            v = self.v_proj(s_parent)
+
+        # Logits [B,N,K]
+        # Scale by sqrt(C) to prevent large logits -> nan
+        logits = torch.einsum("bnc,bkc->bnk", q, k) / (math.sqrt(C) + eps)
+
+        # Masking (Use large negative number, not -inf)
+        logits = logits.masked_fill(mask_parent[:, None, :] < 0.5, -1e4)
+        logits = logits.masked_fill(node_mask[:, :, None] < 0.5, -1e4)
+
+        # Gumbel Selection
+        # Training: One-hot forward, Soft backward
+        # Inference: Hard Argmax
+        current_tau = float(self.tau_init if tau is None else tau)
+
+        if self.training:
+            w = F.gumbel_softmax(logits, tau=current_tau, hard=True, dim=-1)
+        else:
+            idx = torch.argmax(logits, dim=-1)
+            w = F.one_hot(idx, num_classes=K).to(dtype)
+
+        # Mask padding
+        w = w * node_mask[:, :, None]
+
+        # ---- DEBUG stats (cheap) ----
+        with torch.no_grad():
+            w_flip = self._w_flip_rate(w, node_mask)  # 相邻切换率
+            w_ent = self._w_entropy(w, node_mask)  # 平均熵
+            w_top1 = self._w_top1_mean(w, node_mask)  # top1均值
+            col_stats = self._w_column_stats(w, node_mask)  # 列占用/塌缩
+
+
+        # ==========================================================
+        # 2. Base Selection & Scaled Generation
+        # ==========================================================
+        # Select Base Parent Info (Anchor)
+        mu_base = torch.einsum("bnk,bkd->bnd", w, mu_p)  # [B,N,3]
+        s_base = torch.einsum("bnk,bkc->bnc", w, v)  # [B,N,C]
+        Sig_base = torch.einsum("bnk,bkij->bnij", w, Sig_p)  # [B,N,3,3]
+
+        # [Key Stability Fix] Use Diagonal Scale instead of Cholesky
+        # Extract diagonal elements as approximate scale
+        diag_val = torch.diagonal(Sig_base, dim1=-2, dim2=-1)
+        scale_base = (diag_val.clamp(min=1e-8)).sqrt()  # [B,N,3]
+
+        # [Key Logic] Scaled Offset Prediction
+        # "Who am I" (s_trunk) + "Where is my base" (s_base)
+        feat_in = torch.cat([s_trunk_detached, s_base], dim=-1)  # [B,N,2C]
+
+        # Predict relative offset (-1 to 1 via Tanh)
+        # raw_offset: [B,N,3]
+        raw_offset = self.delta_head(feat_in)
+
+        # Scale to physical world: Offset * ParentSize
+        # This gives "Volume" to the generation immediately
+        delta_real = raw_offset * self.delta_scale * scale_base
+
+        # Final Position
+        mu0 = mu_base + delta_real
+        mu0 = mu0 * node_mask[..., None]
+
+        # ==========================================================
+        # 3. Sigma Update (Log-Scale)
+        # ==========================================================
+        # Optional: modify parent shape
+        log_s_delta = self.logscale_head(feat_in)  # ~[-1, 1]
+        s_delta = torch.exp(log_s_delta * 0.5)  # Gentle scaling
+
+        # Update Sig_base: S * Sigma * S^T
+        # Diagonal update for efficiency
+        scale_mat = s_delta.unsqueeze(-1) * s_delta.unsqueeze(-2)
+        Sig_inherit = Sig_base * scale_mat
+
+        # Blend with Spacing Sigma (Local geometry heuristic)
+        Sig_spacing = init_sigma_from_child_spacing(
+            mu0, node_mask,
+            k_nn=self.fps_knn,
+            alpha=self.sigma_cover_alpha,
+            sigma_floor=self.sigma_floor,
+            sigma_ceil=self.sigma_ceil,
+            jitter=max(self.jitter, 1e-6)
+        )
+
+        beta = self.beta_parent_sigma
+        Sig0 = beta * Sig_inherit + (1.0 - beta) * Sig_spacing
+
+        I = torch.eye(3, device=device, dtype=dtype)[None, None]
+        Sig0 = _sym(Sig0) + max(self.jitter, 1e-6) * I
+        Sig0 = Sig0 * node_mask[:, :, None, None]
+
+        # ==========================================================
+        # 4. Build Rigids & Refine
+        # ==========================================================
+        # Initialize semantic features from parent selection
+        s0 = s_base
+
+        r0 = coarse_rigids_from_mu_sigma(mu0, Sig0, self.OffsetGaussianRigid_cls)
+
+        #
+        # ang_rigids = r0.scale_translation(10.0)  # 0.1
+        #
+        # # pooling 得到 r_c / mask_c 后
+        # save_gaussian_as_pdb(
+        #     gaussian_rigid=ang_rigids,
+        #     filename=f"debug__up_r0.pdb",
+        #     mask=node_mask,
+        #     center_mode="gaussian_mean",
+        # )
+
+        z_c = None
+        if self.edge_fusers is not None and (z_parent is not None):
+            z_c, _, _ = self.edge_fusers(
+                A=w, Z_in=z_parent, r_target=r0,
+                mask_f=node_mask, mask_c=mask_parent
+            )
+
+        # Run IGA Refine Tower
+        s1, r1, z1 = self.refine_tower(s0, r0, node_mask, z_c)
+
+
+        # ang_rigids = r1.scale_translation(10.0)  # 0.1
+        #
+        # # pooling 得到 r_c / mask_c 后
+        # save_gaussian_as_pdb(
+        #     gaussian_rigid=ang_rigids,
+        #     filename=f"debug__up_r0.pdb",
+        #     mask=node_mask,
+        #     center_mode="gaussian_mean",
+        # )
+
+        # ==========================================================
+        # 5. Anti-Collapse Losses (Vital!)
+        # ==========================================================
+        reg_total = torch.tensor(0.0, device=device, dtype=dtype)
+
+        # Use Soft w for differentiable loss calculation
+        w_soft = F.softmax(logits, dim=-1)
+
+        # A. Load Balance (Force usage of multiple parents)
+        usage = w_soft.mean(dim=1)  # [B, K]
+        target_usage = torch.ones_like(usage) / max(K, 1)
+        loss_bal = F.mse_loss(usage, target_usage)
+
+        # B. Scale Hinge (Force expansion if collapsed)
+        # Calculate Gyration Radius of generated points
+        center = mu0.mean(dim=1, keepdim=True)
+        dist = (mu0 - center).norm(dim=-1)
+        mask_sum = node_mask.sum().clamp_min(1.0)
+        curr_scale = (dist * node_mask).sum(dim=1) / mask_sum
+
+        # Hinge loss: Penalize if scale < 8.0 Angstrom
+        # This forcibly pushes points apart if they are stuck at origin
+        loss_scale = F.relu(0.5 - curr_scale).mean()
+
+        # Weighted Sum (Adjust weights as needed)
+        # High balance weight to break monopoly
+        reg_total = 2.0 * loss_bal + 1.0 * loss_scale
+
+        # Debug info
+        parent_idx = torch.argmax(w, dim=-1)
+
+
+        aux_debug = {
+            "w_flip": w_flip,
+            "w_entropy": w_ent,
+            "w_top1": w_top1,
+            **col_stats,
+        }
+
+        levels = [{
+            "s0": s0,
+            "mu0": mu0,
+            "Sigma0": Sig0,
+            "r0": r0,
+            "s": s1,
+            "z": z1,
+            "r": r1,
+            "mask": node_mask,
+            "aux": UpAux(w_parent=w, parent_idx=parent_idx,debug=aux_debug)
+        }]
+
+        return levels, reg_total
+
+    @staticmethod
+    def _w_flip_rate(w: torch.Tensor, node_mask: torch.Tensor) -> torch.Tensor:
+        """
+        相邻残基 parent argmax 切换率。
+        w: [B,N,K], node_mask: [B,N] (0/1)
+        return: scalar tensor
+        """
+        # hard assignment
+        a = torch.argmax(w, dim=-1)  # [B,N]
+        # valid adjacent pairs
+        m = (node_mask[:, :-1] > 0.5) & (node_mask[:, 1:] > 0.5)  # [B,N-1]
+        diff = (a[:, :-1] != a[:, 1:]) & m
+        denom = m.sum().clamp_min(1)
+        return diff.sum().float() / denom.float()
+
+    @staticmethod
+    def _w_entropy(w: torch.Tensor, node_mask: torch.Tensor, eps: float = 1e-9) -> torch.Tensor:
+        """
+        平均熵（只统计有效 residue）。
+        H(w_i) = -Σ_k w_i,k log w_i,k
+        """
+        m = (node_mask > 0.5).float()  # [B,N]
+        p = w.clamp_min(eps)
+        h = -(p * p.log()).sum(dim=-1)  # [B,N]
+        denom = m.sum().clamp_min(1.0)
+        return (h * m).sum() / denom
+
+    @staticmethod
+    def _w_top1_mean(w: torch.Tensor, node_mask: torch.Tensor) -> torch.Tensor:
+        """
+        每个 residue 的 top1 概率平均值（衡量 w 是否很尖）。
+        """
+        m = (node_mask > 0.5).float()
+        top1 = w.max(dim=-1).values  # [B,N]
+        denom = m.sum().clamp_min(1.0)
+        return (top1 * m).sum() / denom
+
+    @staticmethod
+    def _w_column_stats(w: torch.Tensor, node_mask: torch.Tensor) -> dict:
+        """
+        统计列占用情况：w_sum[k] = Σ_i w[i,k]
+        返回几个标量：有效 parent 数、top1列占比、Gini-like 等
+        """
+        # w_sum: [B,K]
+        m = (node_mask > 0.5).float().unsqueeze(-1)  # [B,N,1]
+        w_sum = (w * m).sum(dim=1)  # [B,K]
+        # normalize per batch for interpretability
+        w_norm = w_sum / w_sum.sum(dim=-1, keepdim=True).clamp_min(1e-9)  # [B,K]
+
+        # 有效 parent 数：权重大于阈值的列数（阈值按 1/K 的比例）
+        B, K = w_norm.shape
+        thr = (1.0 / max(K, 1)) * 0.5
+        active = (w_norm > thr).sum(dim=-1).float().mean()  # scalar
+
+        # 最大列占比（越大越塌缩）
+        top_col = w_norm.max(dim=-1).values.mean()
+
+        # 简单“集中度”指标：sum(p^2)（越大越集中）
+        conc = (w_norm ** 2).sum(dim=-1).mean()
+
+        return {
+            "w_active_cols": active,   # 越大越分散
+            "w_top_col": top_col,      # 越大越塌缩
+            "w_col_conc": conc,        # 越大越塌缩
+        }
+
+
+
+
+
+# =========================
+# 3) 从 r_parent 抽取 (mu, R, s)
+# =========================
+def extract_parent_params(r_parent, eps: float = 1e-8):
+    """
+    r_parent: OffsetGaussianRigid [B,K]
+    期望它有:
+      - get_gaussian_mean() -> [B,K,3]   (更通用)
+      - get_rots().get_rot_mats() -> [B,K,3,3]
+      - scaling 或 _scaling_log -> [B,K,3]
+    """
+    # mu
+    if hasattr(r_parent, "get_gaussian_mean"):
+        mu = r_parent.get_gaussian_mean()
+    elif hasattr(r_parent, "get_trans"):
+        mu = r_parent.get_trans()
+    else:
+        raise ValueError("r_parent needs get_gaussian_mean() or get_trans().")
+
+    # R
+    if hasattr(r_parent, "get_rots"):
+        rots = r_parent.get_rots()
+        if hasattr(rots, "get_rot_mats"):
+            R = rots.get_rot_mats()
+        else:
+            raise ValueError("r_parent.get_rots() must provide get_rot_mats().")
+    else:
+        raise ValueError("r_parent needs get_rots().get_rot_mats().")
+
+    # s (diag scale)
+    if hasattr(r_parent, "scaling"):
+        s = r_parent.scaling
+    elif hasattr(r_parent, "_scaling_log"):
+        s = torch.exp(r_parent._scaling_log)
+    else:
+        # 退化：用单位尺度
+        s = torch.ones((*mu.shape[:-1], 3), device=mu.device, dtype=mu.dtype)
+
+    s = s.clamp_min(eps)
+    return mu, R, s
+
+
+# =========================
+# 4) K->N broadcast + 预测 xi_hat + decode x_hat
+# =========================
+class UpXiPredictor(nn.Module):
+    """
+    核心：
+      - gather s_parent 到每个 residue：s_pi = s_parent[a_idx]
+      - query 可以是 (s_pi + pos_emb) 或 (s_trunk + s_pi + pos_emb)
+      - 输出 xi_hat [B,N,3]
+      - 用 parent 的 (mu,R,s) decode 回 x_hat
+    """
+    def __init__(
+        self,
+        c_s: int,
+        n_freq: int = 16,
+        pos_weight: float = 1.0,
+        use_trunk_query: bool = False,  # 你说“query 可用 s_trunk”，就开这个
+        mlp_hidden: int = 256,
+    ):
+        super().__init__()
+        self.c_s = int(c_s)
+        self.pos_weight = float(pos_weight)
+        self.use_trunk_query = bool(use_trunk_query)
+
+        self.pos_enc = Pos01FourierEncoder(c_s=self.c_s, n_freq=n_freq)
+
+        # 把输入 query 映射到统一维度
+        in_dim = self.c_s * (2 if self.use_trunk_query else 1)  # [s_pi] (+ [s_trunk])
+        self.q_proj = nn.Sequential(
+            nn.LayerNorm(in_dim),
+            nn.Linear(in_dim, self.c_s),
+            nn.SiLU(),
+            nn.Linear(self.c_s, self.c_s),
+        )
+
+        # 输出 xi_hat
+        self.mlp = nn.Sequential(
+            nn.LayerNorm(self.c_s),
+            nn.Linear(self.c_s, mlp_hidden),
+            nn.SiLU(),
+            nn.Linear(mlp_hidden, mlp_hidden),
+            nn.SiLU(),
+            nn.Linear(mlp_hidden, 3),
+        )
+
+    def forward(
+        self,
+        s_parent: torch.Tensor,     # [B,K,C]
+        r_parent,                  # OffsetGaussianRigid [B,K]
+        a_idx: torch.Tensor,        # [B,N] long
+        node_mask: torch.Tensor,    # [B,N] 0/1
+        pos01: torch.Tensor = None, # [B,N] float in [0,1] (可选；没给就现场算)
+        s_trunk: torch.Tensor = None,  # [B,N,C] (可选；use_trunk_query=True时用)
+    ):
+        B, K, C = s_parent.shape
+        N = a_idx.shape[1]
+        device = s_parent.device
+        dtype = s_parent.dtype
+
+        # pos01
+        if pos01 is None:
+            # 需要 Kmax 来算 seg_len，但 pos01 只用到 a_idx/node_mask
+            # 这里用 K 来当 Kmax 即可（你一般 K=Kmax 或 mask_parent 后的 Kmax）
+            pos01, _ = segment_pos01_from_assignment(a_idx, node_mask, Kmax=K)
+        pos01 = pos01.to(device=device, dtype=torch.float32)
+
+        # pos embedding
+        pos_emb = self.pos_enc(pos01, node_mask).to(dtype=dtype)  # [B,N,C]
+
+        # gather s_parent -> residue
+        idx = a_idx.clamp_min(0).clamp_max(K - 1)
+        s_pi = s_parent.gather(1, idx[..., None].expand(B, N, C))  # [B,N,C]
+        s_pi = s_pi + self.pos_weight * pos_emb
+
+        # build query
+        if self.use_trunk_query:
+            assert s_trunk is not None, "use_trunk_query=True requires s_trunk."
+            q_in = torch.cat([s_trunk, s_pi], dim=-1)  # [B,N,2C]
+        else:
+            q_in = s_pi  # [B,N,C]
+
+        q = self.q_proj(q_in) * node_mask[..., None].to(dtype=dtype)  # [B,N,C]
+
+        # xi_hat
+        scale = 1.5
+        xi_hat = self.mlp(q) * node_mask[..., None].to(dtype=dtype)   # [B,N,3]
+        xi_hat=torch.tanh(xi_hat)*scale
+
+        # decode x_hat
+        mu_k, R_k, s_k = extract_parent_params(r_parent)  # [B,K,3], [B,K,3,3], [B,K,3]
+        mu_i = mu_k.gather(1, idx[..., None].expand(B, N, 3))                       # [B,N,3]
+        s_i  = s_k.gather(1, idx[..., None].expand(B, N, 3))                        # [B,N,3]
+        R_i  = R_k.gather(1, idx[..., None, None].expand(B, N, 3, 3))               # [B,N,3,3]
+
+
+
+        local = xi_hat * s_i
+        x_hat = mu_i + torch.einsum("bnij,bnj->bni", R_i, local)
+        x_hat = x_hat * node_mask[..., None].to(dtype=dtype)
+
+        return {
+            "xi_hat": xi_hat,   # [B,N,3]
+            "x_hat": x_hat*10,     # [B,N,3]
+            "pos01": pos01,     # [B,N]
+            "r_parent":r_parent.scale_translation(10),
+            "a_idx":a_idx
+        }
+
+
+# =========================
+# 5) 极简用法示例
+# =========================
+if __name__ == "__main__":
+    B, N, K, C = 2, 240, 64, 128
+    s_parent = torch.randn(B, K, C)
+    node_mask = torch.ones(B, N)
+    a_idx = torch.randint(0, K, (B, N))
+
+    # 这里用 dummy r_parent：你实际用 OffsetGaussianRigid [B,K]
+    # 为了演示，这里造一个最小替身对象
+    class DummyR:
+        def __init__(self, mu, R, s):
+            self._mu = mu
+            self._R = R
+            self._s = s
+        def get_gaussian_mean(self): return self._mu
+        class _Rots:
+            def __init__(self, R): self._R = R
+            def get_rot_mats(self): return self._R
+        def get_rots(self): return DummyR._Rots(self._R)
+        @property
+        def scaling(self): return self._s
+
+    mu = torch.randn(B, K, 3)
+    # 先用单位旋转
+    R = torch.eye(3).view(1,1,3,3).expand(B, K, 3, 3).contiguous()
+    s = torch.ones(B, K, 3) * 0.2
+    r_parent = DummyR(mu, R, s)
+
+    # (A) 严格 K->N
+    up = UpXiPredictor(c_s=C, use_trunk_query=False)
+    out = up(s_parent=s_parent, r_parent=r_parent, a_idx=a_idx, node_mask=node_mask)
+    print(out["xi_hat"].shape, out["x_hat"].shape)
+
+    # (B) trunk query（你允许的版本）
+    s_trunk = torch.randn(B, N, C)
+    up2 = UpXiPredictor(c_s=C, use_trunk_query=True)
+    out2 = up2(s_parent=s_parent, r_parent=r_parent, a_idx=a_idx, node_mask=node_mask, s_trunk=s_trunk)
+    print(out2["xi_hat"].shape, out2["x_hat"].shape)

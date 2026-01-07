@@ -861,8 +861,9 @@ class CoarseIGABlock(nn.Module):
         iga: nn.Module,                      # InvariantGaussianAttention
         transition: nn.Module,               # StructureModuleTransition
         edgetransition: nn.Module,
-        gau_update: nn.Module,               # GaussianUpdateBlock
-        c_s: int,
+            c_s: int,
+        gau_update: Optional[nn.Module] = None,               # GaussianUpdateBlock
+
     ):
         super().__init__()
         self.iga = iga
@@ -871,7 +872,7 @@ class CoarseIGABlock(nn.Module):
         self.edgetransition=edgetransition
         self.gau_update = gau_update
 
-    def forward(self, s, r, mask,z):
+    def forward(self, s,z, r, mask):
         """
         s: [B, K, C]
         r: OffsetGaussianRigid [B, K]
@@ -895,15 +896,16 @@ class CoarseIGABlock(nn.Module):
         s = s * mask[..., None]
 
         # 4. Gaussian Update
-        r = self.gau_update(
-            s,
-            r,
-            mask=mask,     # coarse 一般全 1，也可以来自 pooling
-        )
+        if self.gau_update is not None:
+            r = self.gau_update(
+                s,
+                r,
+                mask=mask,     # coarse 一般全 1，也可以来自 pooling
+            )
 
         z=self.edgetransition(s, z)
 
-        return s, r,z
+        return s,z, r
 
 
 class CoarseIGATower(nn.Module):
@@ -915,10 +917,11 @@ class CoarseIGATower(nn.Module):
     def __init__(
         self,
         iga: nn.Module,
-        gau_update: nn.Module,
         c_s: int,
-            hgfc_z: int,
+        hgfc_z: int,
         num_layers: int,
+        gau_update: Optional[nn.Module] = None,
+
     ):
         super().__init__()
         self.blocks = nn.ModuleList([
@@ -935,10 +938,10 @@ class CoarseIGATower(nn.Module):
             for _ in range(num_layers)
         ])
 
-    def forward(self, s, r, mask,z):
+    def forward(self, s,z, r, mask):
         for blk in self.blocks:
-            s, r,z = blk(s, r, mask,z)
-        return s, r,z
+            s,z, r = blk(s,z, r, mask)
+        return s,z, r
 
 
 class BottleneckIGAModule(nn.Module):

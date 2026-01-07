@@ -30,6 +30,53 @@ def _uniform_so3(num_batch, num_res, device):
     ).reshape(num_batch, num_res, 3, 3)
 
 
+def center_protein_batch(batch):
+    # 1. 深度拷贝防止修改原始数据
+    noisy_batch = copy.deepcopy(batch)
+
+    # 2. 提取必要的 Tensor 和 Mask
+    # trans_1: [B, N, 3] (CA 位置)
+    # node_mask: [B, N]
+    trans_1 = noisy_batch['trans_1']
+    node_mask = noisy_batch['res_mask']
+    device = trans_1.device
+
+    # 将 mask 扩展到 [B, N, 1] 方便广播计算
+    mask_3d = node_mask.unsqueeze(-1)
+
+    # ---------------------------------------------------------
+    # 3. 计算质心 (Centroid)
+    # 只根据 CA (trans_1) 和 node_mask 计算
+    # ---------------------------------------------------------
+    # 分子：所有有效 CA 坐标之和 [B, 3]
+    sum_coords = (trans_1 * mask_3d).sum(dim=1)
+    # 分母：有效残基的数量 [B, 1]
+    num_nodes = node_mask.sum(dim=1, keepdim=True).clamp_min(1e-8)
+
+    # 质心: [B, 1, 3]
+    centroid = (sum_coords / num_nodes).unsqueeze(1)
+
+    # ---------------------------------------------------------
+    # 4. 减去质心并对无效位置清零
+    # ---------------------------------------------------------
+
+    # A. 处理 trans_1 (Backbone CA) [B, N, 3]
+    noisy_batch['trans_1'] = (trans_1 - centroid) * mask_3d
+
+    # B. 处理 atom14_gt_positions [B, N, 14, 3]
+    if 'atom14_gt_positions' in noisy_batch:
+        # centroid [B, 1, 3] 会自动广播到 [B, N, 14, 3]
+        # 注意 mask 需要扩展到 [B, N, 1, 1]
+        mask_4d = node_mask.view(node_mask.shape[0], node_mask.shape[1], 1, 1)
+        noisy_batch['atom14_gt_positions'] = (noisy_batch['atom14_gt_positions'] - centroid.unsqueeze(2)) * mask_4d
+
+    # C. 处理 atom14_alt_gt_positions [B, N, 14, 3]
+    if 'atom14_alt_gt_positions' in noisy_batch:
+        mask_4d = node_mask.view(node_mask.shape[0], node_mask.shape[1], 1, 1)
+        noisy_batch['atom14_alt_gt_positions'] = (noisy_batch['atom14_alt_gt_positions'] - centroid.unsqueeze(
+            2)) * mask_4d
+
+    return noisy_batch
 def _trans_diffuse_mask(trans_t, trans_1, diffuse_mask):
     return trans_t * diffuse_mask[..., None] + trans_1 * (1 - diffuse_mask[..., None])
 
@@ -437,7 +484,9 @@ class Interpolant:
         return noisy_batch
 
     def fbb_corrupt_batch(self, batch, prob=None):
-        noisy_batch = copy.deepcopy(batch)
+
+        noisy_batch=center_protein_batch(batch)
+        del noisy_batch['rigids_1']
 
         node_mask = noisy_batch['res_mask']
         device = node_mask.device

@@ -4,12 +4,16 @@ import torch.nn.functional as F
 import math
 from typing import Optional, Sequence, Tuple
 from data import utils as du
-from models.pool import LearnOnlyGaussianPoolingV2,coarse_rigids_from_mu_sigma,UniformAnchorSemGeoAssign,UniformAnchorSemAssign
+from models.pool import LearnOnlyGaussianPoolingV2,coarse_rigids_from_mu_sigma,UniformAnchorSemGeoAssign,UniformAnchorSemAssign,SegmentBreakHead,a_idx_from_break_logits_greedy_budget
 from models.IGA import InvariantGaussianAttention,CoarseIGATower,GaussianUpdateBlock,FastTransformerTower
 from models.SlotIGA import  IGASlotPoolingV1
-from data.GaussianRigid import save_gaussian_as_pdb
+from models.SlotIGAv2 import IGASlotPoolingV2
+from data.GaussianRigid import save_gaussian_as_pdb,OffsetGaussianRigid
 from models.loss import HierarchicalGaussianLoss,SymmetricGaussianLoss
 from models.EdgeCoarsen import CoarseEdgeCoarsenAndFuse
+from models.pool import teacher_segment_variable_length,build_parents_from_segments_v3_debug,SegmentPoolingWithPosEnc
+from openfold.utils.rigid_utils import Rigid,Rotation
+
 class HierarchicalDownsampleIGAModule(nn.Module):
     """
     做 K 次:
@@ -28,7 +32,7 @@ class HierarchicalDownsampleIGAModule(nn.Module):
             iga_conf,
             OffsetGaussianRigid_cls,
             num_downsample: int = 2,
-            ratio: float = 2.0,
+            ratio: float = 6.0,
             k_max_cap: int = 1024,
             coarse_iga_layers: int | list[int] = 6,  # <--- 现在可配置
     ):
@@ -54,7 +58,7 @@ class HierarchicalDownsampleIGAModule(nn.Module):
         # ])
 
         self.pools = nn.ModuleList(
-            [IGASlotPoolingV1(c_s=c_s, ratio=ratio, k_max=k_max_cap) for _ in range(num_downsample)])
+            [IGASlotPoolingV2(c_s=c_s, ratio=ratio, k_max=k_max_cap) for _ in range(num_downsample)])
 
         # self.pools = nn.ModuleList([
         #     UniformAnchorSemGeoAssign(
@@ -108,9 +112,9 @@ class HierarchicalDownsampleIGAModule(nn.Module):
             )
 
         # 初始化 Loss 模块
-        # self.hier_loss = HierarchicalGaussianLoss(w_sep=10.0, w_compact=1)  # compact 权重别太大
+        self.hier_loss = HierarchicalGaussianLoss(w_sep=10.0, w_compact=1)  # compact 权重别太大
         # 实例化
-       # self.parent_child_loss = SymmetricGaussianLoss(w_center_p=1.0, w_center_c=10.0, w_shape=0.0, eps=1e-6)
+        self.parent_child_loss = SymmetricGaussianLoss(w_center_p=1.0, w_center_c=10.0, w_shape=0.0, eps=1e-6)
 
     def forward(self, s_f, z,r_f, mask_f, step: int, total_steps: int):
         """
@@ -150,7 +154,7 @@ class HierarchicalDownsampleIGAModule(nn.Module):
             self.pools[lv].tau = 0.8 - 0.5 * t
 
             # 3) pooling
-            A, s_c, mu_c, Sigma_c, idx, pool_loss = self.pools[lv](
+            A, s_c, mu_c, Sigma_c, idx, pool_loss,downmetric = self.pools[lv](
                 s=s, mu=mu, Sigma=Sigma, mask=mask,
                 # w_occ=1.0,
                 # w_rep=0.1,
@@ -163,19 +167,19 @@ class HierarchicalDownsampleIGAModule(nn.Module):
             mask_c = (curr_occ > 1e-4).float()  # [B, K]
             # ---------------------------
             # 计算 Loss
-            # geo_stats = self.hier_loss(mu_c, Sigma_c, mask_c)
-            # pool_reg_total += geo_stats["total_hier"]
+            geo_stats = self.hier_loss(mu_c, Sigma_c, mask_c)
+            pool_reg_total += geo_stats["total_hier"]
 
             # 3. 计算父子一致性 Loss
-            # pc_stats = self.parent_child_loss(
-            #     mu_child=mu,
-            #     Sigma_child=Sigma,
-            #     mu_parent=mu_c,
-            #     Sigma_parent=Sigma_c,
-            #     A=A,
-            #     mask=mask
-            # )
-            # pool_reg_total += pc_stats["loss"]
+            pc_stats = self.parent_child_loss(
+                mu_child=mu,
+                Sigma_child=Sigma,
+                mu_parent=mu_c,
+                Sigma_parent=Sigma_c,
+                A=A,
+                mask=mask
+            )
+            pool_reg_total += pc_stats["loss"]
 
             pool_reg_total = pool_reg_total + pool_loss.total
 
@@ -189,11 +193,11 @@ class HierarchicalDownsampleIGAModule(nn.Module):
                 mu_c, Sigma_c, self.OffsetGaussianRigid_cls
             )
             # ang_rigids = r_c.scale_translation(10.0)  # 0.1
-
-            # pooling 得到 r_c / mask_c 后
+            #
+            # # pooling 得到 r_c / mask_c 后
             # save_gaussian_as_pdb(
             #     gaussian_rigid=ang_rigids,
-            #     filename=f"debug_lv{lv}_r_down_fps.pdb",
+            #     filename=f"debug_lv{lv}_r_down_slotv2.pdb",
             #     mask=mask_c,
             #     center_mode="gaussian_mean",
             # )
@@ -230,6 +234,7 @@ class HierarchicalDownsampleIGAModule(nn.Module):
                 "mask": mask_c,
                 'curr_occ':curr_occ,
                 "pool_loss": pool_loss,
+                "downmetric":downmetric
             })
 
             # 下一层输入
@@ -386,3 +391,279 @@ class HierarchicalDownsampleModuleFast(nn.Module):
             s, r, mask = s_c, r_c, mask_c
 
         return levels, pool_reg_total
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional, Dict, Any, List
+
+
+# ============================================================
+# Helper: hard segment pooling for node features s
+# ============================================================
+def segment_mean_pool_s(
+    s: torch.Tensor,              # [B,N,C]
+    node_mask: torch.Tensor,      # [B,N] 0/1
+    a_idx: torch.Tensor,          # [B,N] long in [0..Kmax-1]
+    mask_parent: torch.Tensor,    # [B,Kmax] 0/1
+    Kmax: int,
+    eps: float = 1e-8,
+):
+    """
+    returns:
+      s_parent: [B,Kmax,C]
+      occ:      [B,Kmax]   (#res in each seg, masked)
+      A:        [B,N,Kmax] hard one-hot (masked)
+    """
+    B, N, C = s.shape
+    dtype = s.dtype
+
+    m = node_mask.to(dtype=dtype)
+    oh = F.one_hot(a_idx.clamp_min(0).clamp_max(Kmax - 1), num_classes=Kmax).to(dtype)  # [B,N,K]
+    A = oh * m.unsqueeze(-1)  # [B,N,K]  (hard assignment + pad masked)
+
+    occ = A.sum(dim=1)  # [B,K]
+    denom = occ.clamp_min(eps).unsqueeze(-1)  # [B,K,1]
+
+    s_parent = torch.einsum("bnk,bnc->bkc", A, s) / denom  # [B,K,C]
+
+    # mask unused parents
+    s_parent = s_parent * mask_parent.to(dtype=dtype).unsqueeze(-1)
+    return s_parent, occ, A
+
+
+# ============================================================
+# Helper: hard segment pooling for edge features z
+# ============================================================
+def segment_mean_pool_z(
+    z: torch.Tensor,              # [B,N,N,Cz]
+    node_mask: torch.Tensor,      # [B,N] 0/1
+    a_idx: torch.Tensor,          # [B,N] long
+    mask_parent: torch.Tensor,    # [B,Kmax] 0/1
+    Kmax: int,
+    eps: float = 1e-8,
+):
+    """
+    z_parent[p,q] = mean_{i in p, j in q} z[i,j]
+    returns:
+      z_parent: [B,Kmax,Kmax,Cz]
+    """
+    if z is None:
+        return None
+
+    B, N, N2, Cz = z.shape
+    assert N2 == N
+
+    dtype = z.dtype
+    m = node_mask.to(dtype=dtype)
+
+    oh = F.one_hot(a_idx.clamp_min(0).clamp_max(Kmax - 1), num_classes=Kmax).to(dtype)  # [B,N,K]
+    # apply node mask to both ends
+    oh_i = oh * m.unsqueeze(-1)  # [B,N,K]
+    oh_j = oh * m.unsqueeze(-1)  # [B,N,K]
+
+    # numerator: sum_{i,j} oh[i,p] * oh[j,q] * z[i,j]
+    # -> [B,K,K,Cz]
+    num = torch.einsum("bik,bjq,bijc->bkqc", oh_i, oh_j, z)
+
+    # denom: (#i in p) * (#j in q)
+    cnt = oh_i.sum(dim=1).clamp_min(eps)  # [B,K]
+    denom = (cnt[:, :, None] * cnt[:, None, :]).unsqueeze(-1)  # [B,K,K,1]
+
+    z_parent = num / denom
+
+    # mask unused parents
+    mp = mask_parent.to(dtype=dtype)
+    z_parent = z_parent * (mp[:, :, None, None] * mp[:, None, :, None])
+
+    return z_parent
+
+
+# ============================================================
+# Main: Simple Segment Downsample Module
+# ============================================================
+class SimpleSegmentDownIGAModule_v1(nn.Module):
+    """
+    简化版 Down：
+      - teacher_segment_variable_length -> (a_idx, mask_parent, seg_lens)
+      - build_parents_from_segments_v3_debug -> r_parent (你已有的“父椭圆/rigid”构造)
+      - s,z 用 hard assignment 聚合到 parent level
+    不做任何 coarse IGA tower（先跑通 AE / segAE 约束）。
+    """
+
+    def __init__(
+        self,
+        c_s: int,
+            iga_conf,
+        Kmax: int = 64,
+        min_len: int = 4,
+        max_len: int = 10,
+        use_pos_emb: bool = True,
+
+        eps: float = 1e-8,
+    ):
+        super().__init__()
+        self.c_s = c_s
+        self.Kmax = Kmax
+        self.min_len = min_len
+        self.max_len = max_len
+        self.use_pos_emb = use_pos_emb
+        # self.pos_emb = pos_emb
+        self.eps = eps
+
+
+        self.pool=SegmentPoolingWithPosEnc(c_s=c_s, Kmax=Kmax, n_freq=16, pos_weight=1.0)
+
+        self.seg_towers = nn.ModuleList()
+
+        iga = InvariantGaussianAttention(
+            c_s=c_s,
+            c_z=getattr(iga_conf, "hgfc_z", 0),
+            c_hidden=iga_conf.c_hidden,
+            no_heads=iga_conf.no_heads,
+            no_qk_gaussians=iga_conf.no_qk_points,
+            no_v_points=iga_conf.no_v_points,
+            layer_idx=1000 ,
+            enable_vis=False,
+        )
+
+
+        self.seg_towers.append(
+            CoarseIGATower(
+                iga=iga,
+                gau_update=None,
+                c_s=c_s,
+                hgfc_z=iga_conf.hgfc_z,
+                num_layers=4,  # <--- 每层不同
+            )
+        )
+
+
+        self.break_head=SegmentBreakHead(c_s=c_s,hidden=iga.c_hidden)
+
+
+        # self.edge_fusers = nn.ModuleList([
+        #     CoarseEdgeCoarsenAndFuse(
+        #         c_z_in=getattr(iga_conf, "hgfc_z", 0),  # 你 IGA 用的 Cz
+        #         c_z_out=getattr(iga_conf, "hgfc_z", 0),  # 你 IGA 用的 Cz
+        #
+        #     )
+        #
+        # ])
+
+    @torch.no_grad()
+    def _teacher_segments(self, node_mask, chain_idx):
+        # 你已有的 teacher 分段函数
+        a_idx, mask_parent, seg_lens = teacher_segment_variable_length(
+            node_mask=node_mask,
+            chain_idx=chain_idx,
+            min_len=self.min_len,
+            max_len=self.max_len,
+            Kmax=self.Kmax,
+        )
+        return a_idx, mask_parent, seg_lens
+
+    def forward(
+        self,
+        s_f: torch.Tensor,                 # [B,N,C]
+        z_f: Optional[torch.Tensor],        # [B,N,N,Cz] or None
+        r_f,                                 # OffsetGaussianRigid [B,N] (fine)
+        node_mask: torch.Tensor,            # [B,N]
+        chain_idx: Optional[torch.Tensor] = None, # [B,N]
+        step: int = 0,
+        total_steps: int = 1,
+    ):
+        B, N, C = s_f.shape
+        Kmax = self.Kmax
+        device = s_f.device
+
+        if chain_idx is None:
+            chain_idx = torch.zeros((B, N), device=device, dtype=torch.long)
+
+        # ----------------------------------------------------
+        # 1) teacher segments -> a_idx/mask_parent/seg_lens
+        # ----------------------------------------------------
+        # a_idx, mask_parent, seg_lens = self._teacher_segments(node_mask=node_mask, chain_idx=chain_idx)
+
+        s_out,_,_ = self.seg_towers[0](s_f, z_f, r_f, node_mask)
+        break_logits = self.break_head(s_out, node_mask, z_f=None )
+
+        a_idx, mask_parent, seg_lens=a_idx_from_break_logits_greedy_budget(break_logits,node_mask,chain_idx,min_len=2,max_len=12,Kmax=int((N/6)))
+
+        # ----------------------------------------------------
+        # 2) build parents geometry (keep your impl)
+        #    NOTE: x_ca comes from your r_f fine gaussian mean (or CA trans)
+        # ----------------------------------------------------
+        # 你现在的约定：x_ca 是 CA 坐标（Å / nm 你自己保证一致）
+        # 如果你希望 x_ca=rigid trans(=CA)，而不是 gaussian_mean，也可以换成 r_f.get_trans()
+        x_ca = r_f.get_trans() if hasattr(r_f, "get_trans") else r_f.get_gaussian_mean()
+
+        parents = build_parents_from_segments_v3_debug(
+            x_ca=x_ca,
+            node_mask=node_mask,
+            a_idx=a_idx,
+            mask_parent=mask_parent,
+            Kmax=mask_parent.shape[-1],
+        )
+        # 期望 parents 里含有 r_parent（OffsetGaussianRigid [B,Kmax]）和可能的 mu/R/s
+        # 你如果 build_parents... 直接返回 r_parent，就把下面这一行改一下：
+
+
+        B, K = parents.mu.shape[:2]
+        parent_rot = Rotation(rot_mats=parents.R)
+        parent_scaling_log = torch.log(parents.s.clamp_min(1e-6))
+        parent_local_mean = torch.zeros((B, K, 3), device=device, dtype=parents.mu.dtype)
+        r_parent = OffsetGaussianRigid(parent_rot, parents.mu, parent_scaling_log, parent_local_mean)
+
+
+
+
+
+        # ----------------------------------------------------
+        # 3) (optional) add positional embedding before pooling
+        # ----------------------------------------------------
+        s_parent, occ_parent, A, aux = self.pool(s_f, node_mask, a_idx, mask_parent)
+        # ----------------------------------------------------
+        # 4) pool s to parent
+        # ----------------------------------------------------
+
+
+        # ----------------------------------------------------
+        # 5) pool z to parent
+        # ----------------------------------------------------
+        z_parent = None
+        # if z_f is not None:
+        #     z_parent, Z_sem_c, Z_geo_c = self.edge_fusers(
+        #         A=A, Z_in=z, r_target=r_parent,
+        #         mask_f=node_mask, mask_c=mask_parent
+        #     )
+
+        # active K (debug)
+        active_K = mask_parent.sum(dim=1).float().mean()
+
+        downmetric = {
+            "seg_down_active_K": active_K.detach(),
+            "seg_down_occ_mean": occ_parent.mean().detach(),
+            "seg_down_occ_max": occ_parent.max().detach(),
+            "seg_down_occ_min": occ_parent.min().detach(),
+            "seg_down_ratip": N/a_idx.max(),
+        }
+
+        levels = [{
+            "A": A,                        # [B,N,K]
+            "s": s_parent,                 # [B,K,C]
+            "z": z_parent,                 # [B,K,K,Cz] or None
+            "r": r_parent,                 # OffsetGaussianRigid [B,K]
+            "mask": mask_parent,           # [B,K]
+            "curr_occ": occ_parent,         # [B,K]
+            "aux": {
+                "a_idx": a_idx,
+                "seg_lens": seg_lens,
+            },
+            "downmetric": downmetric,
+        }]
+
+        # 你以前 forward 返回 (levels, reg_total)
+        reg_total = torch.zeros((), device=device, dtype=s_f.dtype)
+        return levels, reg_total

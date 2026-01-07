@@ -603,36 +603,22 @@ def save_gaussian_as_pdb(
     filename: str,
     res_names=None,
     mask: torch.Tensor | None = None,
-    center_mode: str = "gaussian_mean",   # "gaussian_mean" or "trans"
+    center_mode: str = "gaussian_mean",
 ):
-    """
-    保存 OffsetGaussianRigid 为 PDB + ANISOU 以可视化椭圆。
-    - center_mode="gaussian_mean": 用偏心高斯真正中心 (推荐，用来看融合/溅射)
-    - center_mode="trans": 用 backbone 锚点 (CA)，适合看“frame 轨迹”
-    - mask: [B,N] 或 [N]，只保存有效 token
-    """
-    device = gaussian_rigid.get_trans().device
-
-    # --- pick center ---
     if center_mode == "gaussian_mean":
-        xyz = gaussian_rigid.get_gaussian_mean()  # [B,N,3]
+        xyz = gaussian_rigid.get_gaussian_mean()
     elif center_mode == "trans":
-        xyz = gaussian_rigid.get_trans()          # [B,N,3]
+        xyz = gaussian_rigid.get_trans()
     else:
-        raise ValueError(f"Unknown center_mode: {center_mode}")
+        raise ValueError(center_mode)
 
-    # --- covariance ---
-    covs = gaussian_rigid.get_covariance()        # [B,N,3,3]  (你类里带 jitter) :contentReference[oaicite:1]{index=1}
+    covs = gaussian_rigid.get_covariance()
 
-    # --- flatten & mask ---
     xyz = xyz.detach().cpu()
     covs = covs.detach().cpu()
 
     if mask is not None:
-        if mask.dim() == 2:  # [B,N]
-            mask_f = mask.detach().cpu().reshape(-1) > 0.5
-        else:                # [N]
-            mask_f = mask.detach().cpu().reshape(-1) > 0.5
+        mask_f = (mask.detach().cpu().reshape(-1) > 0.5)
     else:
         mask_f = torch.ones(xyz.numel() // 3, dtype=torch.bool)
 
@@ -640,41 +626,61 @@ def save_gaussian_as_pdb(
     covs = covs.reshape(-1, 3, 3)[mask_f].numpy()
 
     N = xyz.shape[0]
-    if res_names is None:
+    if res_names is None or len(res_names) != N:
         res_names = ["GLY"] * N
-    else:
-        # 若给的是原 residue 长度，但 mask 后长度变了，这里做一下对齐
-        if len(res_names) != N:
-            # 最简单：不强行对齐名字，避免报错
-            res_names = ["GLY"] * N
+
+    chain_id = "A"
+    alt_loc = " "
+    i_code = " "
+    occupancy = 1.00
+    b_iso = 1.00
+    element = "C"   # 你用 CA 原子只是占位，元素随便但要放到列 77-78
+    charge = "  "
 
     with open(filename, "w") as f:
         f.write("HEADER    GAUSSIAN_PROTEIN\n")
+        # 可选：写个 CRYST1，避免某些软件按晶胞坐标脑补
+        # f.write("CRYST1   1.000   1.000   1.000  90.00  90.00  90.00 P 1           1\n")
+
         for i in range(N):
             serial = i + 1
             name = "CA"
             res = res_names[i]
+            res_seq = i + 1  # 不要用 serial 当 residue id；用自己的序号即可
+
             x, y, z = xyz[i]
+            c = covs[i]
+
+            # ANISOU 需要 1e-4 Å^2 的整数；用 round，别用 int 截断
+            u11 = int(round(c[0, 0] * 1e4))
+            u22 = int(round(c[1, 1] * 1e4))
+            u33 = int(round(c[2, 2] * 1e4))
+            u12 = int(round(c[0, 1] * 1e4))
+            u13 = int(round(c[0, 2] * 1e4))
+            u23 = int(round(c[1, 2] * 1e4))
+
+            # ——严格 PDB 列宽——
+            # ATOM: columns follow PDB v3 fixed width
             f.write(
-                f"ATOM  {serial:5d}  {name:<4s}{res:>3s} A{serial:4d}    "
-                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  1.00           C  \n"
+                f"ATOM  {serial:5d} {name:>4s}{alt_loc:1s}{res:>3s} {chain_id:1s}"
+                f"{res_seq:4d}{i_code:1s}   "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}"
+                f"{occupancy:6.2f}{b_iso:6.2f}          "
+                f"{element:>2s}{charge:2s}\n"
             )
 
-            c = covs[i]
-            u = [
-                int(c[0, 0] * 10000),
-                int(c[1, 1] * 10000),
-                int(c[2, 2] * 10000),
-                int(c[0, 1] * 10000),
-                int(c[0, 2] * 10000),
-                int(c[1, 2] * 10000),
-            ]
+            # ANISOU: U’s are 6 integers, each 7 columns
             f.write(
-                f"ANISOU{serial:5d}  {name:<4s}{res:>3s} A{serial:4d} "
-                f"{u[0]:7d}{u[1]:7d}{u[2]:7d}{u[3]:7d}{u[4]:7d}{u[5]:7d}       C  \n"
+                f"ANISOU{serial:5d} {name:>4s}{alt_loc:1s}{res:>3s} {chain_id:1s}"
+                f"{res_seq:4d}{i_code:1s} "
+                f"{u11:7d}{u22:7d}{u33:7d}{u12:7d}{u13:7d}{u23:7d}          "
+                f"{element:>2s}{charge:2s}\n"
             )
+
         f.write("END\n")
+
     print(f"Saved: {filename} (N={N}, center_mode={center_mode})")
+
 
 
 
@@ -734,6 +740,212 @@ def process_pdb_and_compare(pdb_path):
     # # --- 2. 生成全原子高斯 (All Atoms) ---
     # gr_all = OffsetGaussianRigid.from_atom14_weighted(n_t, ca_t, c_t, o_t, sc_t, mask_t, base_thickness=0.8)
     # save_gaussian_as_pdb(gr_all, f"{pdb_path[:-4]}_ALL_atoms.pdb", res_names)
+
+
+import numpy as np
+import torch
+from plyfile import PlyData, PlyElement  # 需要 pip install plyfile
+
+
+def save_parents_as_ply(parents, filename="parents_data.ply"):
+    """
+    将 ParentParams 保存为标准 3DGS PLY 格式。
+    保存内容: x, y, z, n_x, n_y, n_z (作为旋转), scale_0~2, rot_0~3 (四元数)
+    """
+    # 1. 提取数据并转为 CPU numpy
+    # parents.s 是 [B, K, 3], parents.R 是 [B, K, 3, 3]
+    # 我们这里展平 Batch 和 K 维度
+    mu = parents.mu.detach().cpu().numpy().reshape(-1, 3)
+    s = parents.s.detach().cpu().numpy().reshape(-1, 3)
+    R = parents.R.detach().cpu().numpy().reshape(-1, 3, 3)
+    mask = parents.mask_parent.detach().cpu().numpy().reshape(-1)
+
+    # 过滤掉 mask 为 0 的无效点
+    valid_idx = mask > 0.5
+    xyz = mu[valid_idx]
+    scales = s[valid_idx]
+    rots = R[valid_idx]
+
+    # 2. 将旋转矩阵转为四元数 (xyzw) 用于保存
+    # 这里手动简易转换，或者使用 scipy.spatial.transform.Rotation
+    from scipy.spatial.transform import Rotation
+    # 注意：Rotation 库要求行列式为+1，V3代码里我们已经修正了手性，所以这里是安全的
+    qs = Rotation.from_matrix(rots).as_quat()  # [N, 4] -> (x, y, z, w)
+
+    # 3. 构建结构化数组
+    dtype_full = [
+        ('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
+        ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),  # 仅仅为了兼容某些viewer，可填0
+        ('f_dc_0', 'f4'), ('f_dc_1', 'f4'), ('f_dc_2', 'f4'),  # 颜色 (RGB)
+        ('scale_0', 'f4'), ('scale_1', 'f4'), ('scale_2', 'f4'),
+        ('rot_0', 'f4'), ('rot_1', 'f4'), ('rot_2', 'f4'), ('rot_3', 'f4'),  # Quaternion
+        ('opacity', 'f4')
+    ]
+
+    elements = np.empty(xyz.shape[0], dtype=dtype_full)
+
+    # 填充数据
+    elements['x'] = xyz[:, 0]
+    elements['y'] = xyz[:, 1]
+    elements['z'] = xyz[:, 2]
+    elements['nx'] = 0
+    elements['ny'] = 0
+    elements['nz'] = 0
+
+    # 颜色设为粉色 (RGB: 1, 0.5, 0.5) -> SH 转换有点麻烦，这里简化存 RGB
+    elements['f_dc_0'] = 1.0
+    elements['f_dc_1'] = 0.5
+    elements['f_dc_2'] = 0.5
+
+    # 3DGS 标准通常存 log(scale)，但为了通用性，这里存原始 scale
+    # 如果你是给标准 3DGS 查看器用，建议存 np.log(scales + 1e-6)
+    elements['scale_0'] = scales[:, 0]
+    elements['scale_1'] = scales[:, 1]
+    elements['scale_2'] = scales[:, 2]
+
+    # Rotation (w, x, y, z) vs (x, y, z, w) 取决于查看器，PLY通常存 xyzw
+    elements['rot_0'] = qs[:, 3]  # w
+    elements['rot_1'] = qs[:, 0]  # x
+    elements['rot_2'] = qs[:, 1]  # y
+    elements['rot_3'] = qs[:, 2]  # z
+
+    elements['opacity'] = 1.0
+
+    # 4. 写入文件
+    el = PlyElement.describe(elements, 'vertex')
+    PlyData([el]).write(filename)
+    print(f"Saved PLY data to {filename}")
+
+
+def save_parents_as_pdb_manual_cov(parents, filename):
+    """
+    直接利用 mu, R, s 计算协方差并保存 PDB。
+    完全绕过 OffsetGaussianRigid 类，避免黑盒导致的轴序错乱。
+    """
+    # 1. 提取数据
+    mu = parents.mu.detach().cpu().numpy().reshape(-1, 3)  # [Total_K, 3]
+    s = parents.s.detach().cpu().numpy().reshape(-1, 3)  # [Total_K, 3]
+    R = parents.R.detach().cpu().numpy().reshape(-1, 3, 3)  # [Total_K, 3, 3]
+    mask = parents.mask_parent.detach().cpu().numpy().reshape(-1)
+
+    # 过滤无效点
+    valid_idx = mask > 0.5
+    mu = mu[valid_idx]
+    s = s[valid_idx]
+    R = R[valid_idx]
+
+    N = len(mu)
+
+    # 2. 【核心】手动计算协方差矩阵 Sigma = R * S^2 * R.T
+    # 这一步是纯数学，绝对不会有 "长短轴反了" 的问题
+    # s 也就是 radii
+    covs = np.zeros((N, 3, 3))
+    for i in range(N):
+        # 构建对角阵 S^2
+        S2 = np.diag(s[i] ** 2)
+        # R @ S^2 @ R.T
+        covs[i] = R[i] @ S2 @ R[i].T
+
+    # 3. 写入 PDB (带数值保护)
+    with open(filename, "w") as f:
+        f.write("HEADER    MANUAL_COV_PARENTS\n")
+        for i in range(N):
+            serial = i + 1
+            x, y, z = mu[i]
+
+            # 写入 ATOM 行
+            f.write(
+                f"ATOM  {serial:5d}  CA  GLY A{serial:4d}    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  1.00           C  \n"
+            )
+
+            # 写入 ANISOU 行
+            c = covs[i]
+            u_vals = [c[0, 0], c[1, 1], c[2, 2], c[0, 1], c[0, 2], c[1, 2]]
+
+            # 数值保护 (PDB 限制)
+            LIMIT = 9999999
+            u_int = []
+            for v in u_vals:
+                val = int(v * 10000)  # PDB 单位
+                val = max(min(val, LIMIT), -LIMIT)
+                u_int.append(val)
+
+            f.write(
+                f"ANISOU{serial:5d}  CA  GLY A{serial:4d} "
+                f"{u_int[0]:7d}{u_int[1]:7d}{u_int[2]:7d}{u_int[3]:7d}{u_int[4]:7d}{u_int[5]:7d}       C  \n"
+            )
+        f.write("END\n")
+    print(f"Saved PDB data to {filename}")
+
+
+
+
+
+def save_parents_as_pdb_explicit(parents, filename, limit=9999999):
+    """
+    [推荐] 显式计算协方差并保存为 PDB。
+    完全绕过 OffsetGaussianRigid 和 Rotation 类，彻底解决长短轴反转问题。
+    """
+    # 1. 提取数据 (CPU numpy)
+    mu = parents.mu.detach().cpu().numpy().reshape(-1, 3)  # [Total_N, 3]
+    s = parents.s.detach().cpu().numpy().reshape(-1, 3)  # [Total_N, 3]
+    R = parents.R.detach().cpu().numpy().reshape(-1, 3, 3)  # [Total_N, 3, 3]
+    mask = parents.mask_parent.detach().cpu().numpy().reshape(-1)
+
+    # 过滤无效点
+    valid_idx = mask > 0.5
+    mu = mu[valid_idx]
+    s = s[valid_idx]
+    R = R[valid_idx]
+
+    N = len(mu)
+    print(f"Saving {N} ellipsoids to {filename}...")
+
+    # 2. 【核心】手动计算协方差矩阵 Sigma = R * S^2 * R^T
+    # 这一步是纯数学，绝对不会出错
+    covs = np.zeros((N, 3, 3))
+    for i in range(N):
+        # 构建对角阵 S^2 (方差)
+        S2 = np.diag(s[i] ** 2)
+        # 矩阵乘法: (3,3) = (3,3) @ (3,3) @ (3,3)
+        # 这就是协方差的定义，没有任何歧义
+        covs[i] = R[i] @ S2 @ R[i].T
+
+    # 3. 写入 PDB
+    with open(filename, "w") as f:
+        f.write("HEADER    EXPLICIT_COV_PARENTS\n")
+        for i in range(N):
+            serial = i + 1
+            x, y, z = mu[i]
+
+            # 写入原子坐标 (CA)
+            f.write(
+                f"ATOM  {serial:5d}  CA  GLY A{serial:4d}    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  1.00           C  \n"
+            )
+
+            # 写入各向异性 (ANISOU)
+            c = covs[i]
+            # 取出 PDB 需要的 6 个分量 (上三角)
+            # U11, U22, U33, U12, U13, U23
+            u_vals = [c[0, 0], c[1, 1], c[2, 2], c[0, 1], c[0, 2], c[1, 2]]
+
+            # 数值转换与保护
+            u_int = []
+            for v in u_vals:
+                val = int(v * 10000)  # PDB 单位转换
+                # 强制截断，防止数据爆炸导致格式错乱
+                val = max(min(val, limit), -limit)
+                u_int.append(val)
+
+            f.write(
+                f"ANISOU{serial:5d}  CA  GLY A{serial:4d} "
+                f"{u_int[0]:7d}{u_int[1]:7d}{u_int[2]:7d}{u_int[3]:7d}{u_int[4]:7d}{u_int[5]:7d}       C  \n"
+            )
+        f.write("END\n")
+    print(f"[Success] PDB saved: {filename}")
+
 
 
 if __name__ == "__main__":

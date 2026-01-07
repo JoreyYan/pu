@@ -1022,3 +1022,647 @@ def coarse_rigids_from_mu_sigma(mu_c, Sigma_c, OffsetGaussianRigid_cls, eps=1e-6
         scaling_log=scaling_log,
         local_mean=local_mean,
     )
+
+
+# -------------------------
+# 1) teacher 分段：变长 4~10
+#    支持链断点（chain_idx变了就强制新段）
+# -------------------------
+@torch.no_grad()
+def teacher_segment_variable_length(
+    node_mask: torch.Tensor,          # [B,N] 0/1
+    chain_idx: Optional[torch.Tensor] = None,  # [B,N] int (可选)
+    min_len: int = 4,
+    max_len: int = 10,
+    Kmax: int = 64,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    返回:
+      a_idx: [B,N]       residue -> parent id (0..Kmax-1)
+      mask_parent:[B,Kmax]  启用的 parent
+      seg_lens: [B,Kmax] 段长
+    """
+    B, N = node_mask.shape
+    device = node_mask.device
+
+    a_idx = torch.zeros((B, N), device=device, dtype=torch.long)
+    mask_parent = torch.zeros((B, Kmax), device=device, dtype=torch.float32)
+    seg_lens = torch.zeros((B, Kmax), device=device, dtype=torch.long)
+
+    for b in range(B):
+        n = int(node_mask[b].sum().item())
+        if n <= 0:
+            continue
+
+        pos = 0
+        k = 0
+        while pos < n and k < Kmax:
+            # 链断点：如果 chain_idx 有变化，强制从这里开新段
+            if chain_idx is not None and pos > 0:
+                if chain_idx[b, pos].item() != chain_idx[b, pos - 1].item():
+                    # 直接开新段（不改变 pos，只是 k++)
+                    pass
+
+            L = torch.randint(low=min_len, high=max_len + 1, size=(1,), device=device).item()
+            L = min(L, n - pos)
+
+            # 如果有 chain_idx，别跨链
+            if chain_idx is not None:
+                c0 = chain_idx[b, pos].item()
+                # 找到最长不跨链长度
+                maxL = 1
+                for t in range(pos + 1, pos + L):
+                    if chain_idx[b, t].item() != c0:
+                        break
+                    maxL += 1
+                L = maxL
+
+            a_idx[b, pos:pos + L] = k
+            mask_parent[b, k] = 1.0
+            seg_lens[b, k] = L
+            pos += L
+            k += 1
+
+        # 如果 n 没覆盖完（Kmax 太小）：把剩余塞到最后一个
+        if pos < n:
+            last = Kmax - 1
+            a_idx[b, pos:n] = last
+            mask_parent[b, last] = 1.0
+            seg_lens[b, last] += (n - pos)
+
+    return a_idx, mask_parent, seg_lens
+
+
+@dataclass
+class ParentParams:
+    mu: torch.Tensor
+    R: torch.Tensor
+    s: torch.Tensor
+    mask_parent: torch.Tensor
+
+def build_parents_from_segments_v3_debug(
+        x_ca: torch.Tensor,
+        node_mask: torch.Tensor,
+        a_idx: torch.Tensor,
+        mask_parent: torch.Tensor,
+        Kmax: int,
+        eps: float = 1e-6,
+) -> ParentParams:
+    # -------------------------------------------------------------------------
+    # PART 1: 计算逻辑 (保持你要求的 Exact Fit 算法不变)
+    # -------------------------------------------------------------------------
+    B, N, _ = x_ca.shape
+    device, dtype = x_ca.device, x_ca.dtype
+    K = Kmax
+
+    x = x_ca * node_mask[..., None]
+    oh = F.one_hot(a_idx.clamp(0, K - 1).long(), num_classes=K).to(dtype)
+    oh = oh * node_mask[..., None]
+    w = oh.permute(0, 2, 1)  # [B, K, N]
+    cnt = w.sum(dim=2).clamp_min(1.0)
+
+    # Center
+    mu = torch.einsum("bkn,bnj->bkj", w, x) / cnt[..., None]
+
+    # Covariance & Scatter
+    delta = x.unsqueeze(1) - mu.unsqueeze(2)
+    delta = delta * w.unsqueeze(-1)
+    scatter = torch.einsum("bkni,bknj->bkij", delta, delta)
+    denom = (cnt - 1.0).clamp_min(1.0)
+    cov = scatter / denom[..., None, None]
+
+    # Eigendecomposition (Ascending: s[0]=Small, s[2]=Large)
+    I = torch.eye(3, device=device, dtype=dtype)[None, None]
+    cov_safe = cov + I * eps
+
+    with torch.no_grad():
+        eigvals, eigvecs = torch.linalg.eigh(cov_safe)
+        eigvals = eigvals.detach()
+        eigvecs = eigvecs.detach()
+
+    Rk = eigvecs
+    det = torch.det(Rk)
+    flip = (det < 0).float().unsqueeze(-1).unsqueeze(-1)
+    # Fix handedness
+    col0 = Rk[..., 0] * (1.0 - 2.0 * flip.squeeze(-1))
+    Rk = torch.stack([col0, Rk[..., 1], Rk[..., 2]], dim=-1)
+
+    # Exact Fit Scaling
+    local_coords = torch.einsum("bkni,bkij->bknj", delta, Rk)
+    std_devs_sq = eigvals.clamp_min(eps).unsqueeze(2)
+    norm_dist_sq = (local_coords ** 2 / std_devs_sq).sum(dim=-1)
+
+    # Mask invalid points for max calculation
+    valid_dist = torch.where(w > 0.5, norm_dist_sq, torch.tensor(-1.0, device=device))
+    max_sq_val = valid_dist.max(dim=2).values.clamp_min(eps)
+    scale_factor = torch.sqrt(max_sq_val)
+
+    # Final Radii
+    s = torch.sqrt(eigvals.clamp_min(eps)) * scale_factor.unsqueeze(-1)
+
+    # Apply Masks
+    valid_mask = mask_parent[..., None, None]
+    mu_final = mu * mask_parent[..., None]
+    s_final = s * mask_parent[..., None]
+    Rk_final = Rk * valid_mask + I * (1.0 - valid_mask)
+
+    # -------------------------------------------------------------------------
+    # PART 2: 内部可视化 (DEBUG PLOTTING - Batch 0 All Parents)
+    # -------------------------------------------------------------------------
+    # 只有在非训练模式或者想强制看的时候才跑这个
+    if False:
+        print(f"\n[DEBUG] Plotting all parents for Batch 0 (Total K={K})...")
+
+        # 准备数据 (转 numpy)
+        b_idx = 0
+        points_all = x[b_idx].detach().cpu().numpy()  # [N, 3]
+        labels = a_idx[b_idx].detach().cpu().numpy()  # [N]
+
+        mu_np = mu_final[b_idx].detach().cpu().numpy()  # [K, 3]
+        R_np = Rk_final[b_idx].detach().cpu().numpy()  # [K, 3, 3]
+        s_np = s_final[b_idx].detach().cpu().numpy()  # [K, 3]
+        mask_p_np = mask_parent[b_idx].detach().cpu().numpy()  # [K]
+
+        fig = plt.figure(figsize=(12, 10))
+        ax = fig.add_subplot(111, projection='3d')
+
+        # 1. 绘制所有原始点 (按归属上色)
+        # 使用 colormap 区分不同的 parent
+        cmap = plt.get_cmap('tab10')
+        for n_i in range(len(points_all)):
+            if node_mask[b_idx, n_i] > 0.5:
+                cluster_id = int(labels[n_i])
+                ax.scatter(points_all[n_i, 0], points_all[n_i, 1], points_all[n_i, 2],
+                           color=cmap(cluster_id % 10), s=40, alpha=0.6)
+
+        # 2. 遍历每一个 Parent 进行绘制
+        u = np.linspace(0, 2 * np.pi, 20)
+        v = np.linspace(0, np.pi, 15)
+        x_unit = np.outer(np.cos(u), np.sin(v))
+        y_unit = np.outer(np.sin(u), np.sin(v))
+        z_unit = np.outer(np.ones_like(u), np.cos(v))
+
+        print(mu_np)
+        print(s_np)
+        print(R_np)
+
+        for k in range(K):
+            if mask_p_np[k] < 0.5:
+                continue  # 跳过无效 Parent
+
+            center = mu_np[k]
+            radii = s_np[k]  # [s0, s1, s2] (从小到大)
+            rot = R_np[k]  # [col0, col1, col2]
+
+            # --- A. 画椭球 Wireframe ---
+            # 缩放: local_x * s0, local_y * s1, local_z * s2
+            x_loc = x_unit * radii[0]
+            y_loc = y_unit * radii[1]
+            z_loc = z_unit * radii[2]
+
+            # 旋转 & 平移
+            # shape: [3, num_points]
+            coords = np.stack([x_loc.flatten(), y_loc.flatten(), z_loc.flatten()])
+            coords_world = (rot @ coords).T + center
+
+            Xw = coords_world[:, 0].reshape(x_unit.shape)
+            Yw = coords_world[:, 1].reshape(y_unit.shape)
+            Zw = coords_world[:, 2].reshape(z_unit.shape)
+
+            color = cmap(k % 10)
+            ax.plot_wireframe(Xw, Yw, Zw, color=color, alpha=0.3)
+
+            # --- B. 画中心点 ---
+            ax.scatter(center[0], center[1], center[2], color='k', marker='x', s=100)
+
+            # --- C. 画最长轴 (Direction) ---
+            # s[2] 是最大的特征值 (长轴), R的第2列 (index 2) 是对应的方向
+            long_axis_vec = rot[:, 2] * radii[2] * 1.1
+            ax.quiver(center[0], center[1], center[2],
+                      long_axis_vec[0], long_axis_vec[1], long_axis_vec[2],
+                      color=color, linewidth=2, linestyle='dashed')
+
+        # 3. 调整视角
+        # 简单的 Box Aspect 修正
+        all_coords = points_all[node_mask[b_idx].bool().cpu().numpy()]
+        if len(all_coords) > 0:
+            max_range = (all_coords.max(0) - all_coords.min(0)).max() / 2.0
+            mid = (all_coords.max(0) + all_coords.min(0)) * 0.5
+            ax.set_xlim(mid[0] - max_range, mid[0] + max_range)
+            ax.set_ylim(mid[1] - max_range, mid[1] + max_range)
+            ax.set_zlim(mid[2] - max_range, mid[2] + max_range)
+
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        plt.title(f"In-Function Visualization (Batch 0, {K} Parents)")
+        plt.show()  # 阻塞住，直到你关闭窗口
+        save_path = "debug_ellipse_v3.png"
+        plt.savefig(save_path, dpi=300)
+
+    return ParentParams(mu=mu_final, R=Rk_final, s=s_final, mask_parent=mask_parent)
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+# =========================
+# 1) 你现成的 mean-pool（原样保留）
+# =========================
+def segment_mean_pool_s(
+    s: torch.Tensor,              # [B,N,C]
+    node_mask: torch.Tensor,      # [B,N] 0/1
+    a_idx: torch.Tensor,          # [B,N] long in [0..Kmax-1]
+    mask_parent: torch.Tensor,    # [B,Kmax] 0/1
+    Kmax: int,
+    eps: float = 1e-8,
+):
+    """
+    returns:
+      s_parent: [B,Kmax,C]
+      occ:      [B,Kmax]   (#res in each seg, masked)
+      A:        [B,N,Kmax] hard one-hot (masked)
+    """
+    B, N, C = s.shape
+    dtype = s.dtype
+
+    m = node_mask.to(dtype=dtype)
+    oh = F.one_hot(a_idx.clamp_min(0).clamp_max(Kmax - 1), num_classes=Kmax).to(dtype)  # [B,N,K]
+    A = oh * m.unsqueeze(-1)  # [B,N,K]  (hard assignment + pad masked)
+
+    occ = A.sum(dim=1)  # [B,K]
+    denom = occ.clamp_min(eps).unsqueeze(-1)  # [B,K,1]
+
+    s_parent = torch.einsum("bnk,bnc->bkc", A, s) / denom  # [B,K,C]
+
+    # mask unused parents
+    s_parent = s_parent * mask_parent.to(dtype=dtype).unsqueeze(-1)
+    return s_parent, occ, A
+
+
+# =========================
+# 2) 段内相对位置 pos01（段内从 0 开始，归一化到 [0,1]）
+#    假设 teacher 分段是沿序号连续的
+# =========================
+@torch.no_grad()
+def segment_pos01_from_assignment(
+    a_idx: torch.Tensor,       # [B,N] long
+    node_mask: torch.Tensor,   # [B,N] 0/1
+    Kmax: int,
+    eps: float = 1e-8,
+):
+    """
+    返回:
+      pos01:   [B,N] float in [0,1]
+      seg_len: [B,Kmax] long (unused parents = 0)
+    """
+    B, N = a_idx.shape
+    device = a_idx.device
+
+    pos01 = torch.zeros((B, N), device=device, dtype=torch.float32)
+    seg_len = torch.zeros((B, Kmax), device=device, dtype=torch.long)
+
+    m = node_mask.bool()
+    for b in range(B):
+        n = int(m[b].sum().item())
+        if n <= 0:
+            continue
+
+        ids = a_idx[b, :n]  # [n]
+
+        # change points where segment id changes
+        change = torch.ones(n, device=device, dtype=torch.bool)
+        change[1:] = ids[1:] != ids[:-1]
+        starts = torch.nonzero(change, as_tuple=False).squeeze(-1)          # [S]
+        ends = torch.cat([starts[1:], torch.tensor([n], device=device)])    # end-exclusive
+
+        for s0, e0 in zip(starts.tolist(), ends.tolist()):
+            k = int(ids[s0].item())
+            L = e0 - s0
+            if 0 <= k < Kmax:
+                seg_len[b, k] = L
+
+            if L <= 1:
+                pos01[b, s0:e0] = 0.0
+            else:
+                t = torch.arange(L, device=device, dtype=torch.float32) / (L - 1.0 + eps)
+                pos01[b, s0:e0] = t
+
+    return pos01, seg_len
+
+
+# =========================
+# 3) 轻量 Fourier 位置编码：pos01 -> [B,N,C]
+# =========================
+class Pos01FourierEncoder(nn.Module):
+    """
+    输入 pos01 ∈ [0,1]，输出 [B,N,C]
+    """
+    def __init__(self, c_s: int, n_freq: int = 16, trainable: bool = False):
+        super().__init__()
+        self.c_s = int(c_s)
+        self.n_freq = int(n_freq)
+
+        # 2^k 频率（稳定、足够表达“段内形状”）
+        freq = 2.0 ** torch.arange(self.n_freq, dtype=torch.float32)  # [F]
+        self.register_buffer("freq", freq, persistent=False)
+
+        feat_dim = 2 * self.n_freq
+        self.proj = nn.Linear(feat_dim, self.c_s, bias=False)
+
+        self.log_scale = nn.Parameter(torch.zeros(())) if trainable else None
+        self.ln = nn.LayerNorm(self.c_s)
+
+    def forward(self, pos01: torch.Tensor, node_mask: torch.Tensor):
+        """
+        pos01: [B,N] float
+        node_mask: [B,N] 0/1
+        return: [B,N,C]
+        """
+        device = pos01.device
+        m = node_mask.to(dtype=pos01.dtype)
+
+        x = pos01.clamp(0.0, 1.0).unsqueeze(-1)  # [B,N,1]
+        freq = self.freq.to(device=device)       # [F]
+        if self.log_scale is not None:
+            freq = freq * torch.exp(self.log_scale)
+
+        ang = 2.0 * torch.pi * x * freq.view(1, 1, -1)  # [B,N,F]
+        feat = torch.cat([torch.sin(ang), torch.cos(ang)], dim=-1)  # [B,N,2F]
+
+        out = self.proj(feat)
+        out = out * m.unsqueeze(-1)
+        out = self.ln(out)
+        return out
+
+
+# =========================
+# 4) 组合：Segment pooling + 段内相对位置编码注入
+# =========================
+class SegmentPoolingWithPosEnc(nn.Module):
+    """
+    用法：
+      pool = SegmentPoolingWithPosEnc(c_s=C, Kmax=Kmax, n_freq=16, pos_weight=1.0)
+      s_parent, occ, A, aux = pool(s, node_mask, a_idx, mask_parent)
+
+    说明：
+      - pos01 是“每段从 0 开始”的段内相对位置（归一化到 0..1）
+      - 我们把 pos_emb 加到 s 上再做 mean-pool
+    """
+    def __init__(self, c_s: int, Kmax: int, n_freq: int = 16, pos_weight: float = 1.0, trainable_pos_scale: bool = False):
+        super().__init__()
+        self.Kmax = int(Kmax)
+        self.pos_weight = float(pos_weight)
+        self.pos_enc = Pos01FourierEncoder(c_s=c_s, n_freq=n_freq, trainable=trainable_pos_scale)
+
+    def forward(
+        self,
+        s: torch.Tensor,              # [B,N,C]
+        node_mask: torch.Tensor,      # [B,N]
+        a_idx: torch.Tensor,          # [B,N]
+        mask_parent: torch.Tensor,    # [B,Kmax]
+        eps: float = 1e-8,
+    ):
+        # 1) 段内 pos01
+        pos01, seg_len = segment_pos01_from_assignment(
+            a_idx=a_idx,
+            node_mask=node_mask,
+            Kmax=mask_parent.shape[-1],
+        )
+        pos01 = pos01.to(device=s.device)  # float32
+
+        # 2) pos embedding -> 注入到语义
+        pos_emb = self.pos_enc(pos01, node_mask).to(dtype=s.dtype)  # [B,N,C]
+        s_aug = s + (self.pos_weight * pos_emb)
+
+        # 3) mean pool
+        s_parent, occ, A = segment_mean_pool_s(
+            s=s_aug,
+            node_mask=node_mask,
+            a_idx=a_idx,
+            mask_parent=mask_parent,
+            Kmax=mask_parent.shape[-1],
+            eps=eps,
+        )
+
+        aux = {
+            "pos01": pos01,     # [B,N] float32
+            "seg_len": seg_len, # [B,K] long
+        }
+        return s_parent, occ, A, aux
+
+
+# ============================================================
+# 0) 从 a_idx 生成 teacher break 标签（最省事、最稳）
+#    break[i]=1 表示 i 和 i+1 之间切段
+# ============================================================
+
+
+
+# ============================================================
+# 1) 可学习 segmenter head：预测 break_logits [B,N-1]
+#    输入只用 s_out (以及可选 z_local)
+# ============================================================
+class SegmentBreakHead(nn.Module):
+    """
+    预测每个 i,i+1 的切分概率。默认只用语义 s。
+    你也可以把 z_local[i,i+1] 拼进去。
+    """
+    def __init__(self, c_s: int, c_z: int = 0, hidden: int = 256, use_z: bool = False):
+        super().__init__()
+        self.use_z = bool(use_z)
+        in_dim = 2 * c_s + (c_z if self.use_z else 0)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, 1),
+        )
+
+    def forward(
+        self,
+        s: torch.Tensor,                 # [B,N,C]
+        node_mask: torch.Tensor,         # [B,N]
+        z_f: torch.Tensor | None = None, # [B,N,N,Cz]
+    ):
+        B, N, C = s.shape
+        dtype = s.dtype
+
+        m_pair = node_mask[:, :-1] * node_mask[:, 1:]  # [B,N-1]
+
+        s_i = s[:, :-1, :]
+        s_j = s[:, 1:, :]
+        feat = [s_i, s_j]
+
+        if self.use_z:
+            assert z_f is not None, "use_z=True but z_f is None"
+            # 取局部边 (i,i+1)
+            z_ij = z_f[:, :-1, 1:, :]            # [B,N-1,N-1,Cz] 不是我们要的
+            # 正确取对角 (i,i+1)
+            # z_f: [B,N,N,Cz] -> z_local[b,i] = z_f[b,i,i+1]
+            z_local = z_f[:, torch.arange(N-1), torch.arange(1, N), :]  # [B,N-1,Cz]
+            feat.append(z_local)
+
+        x = torch.cat(feat, dim=-1)  # [B,N-1,dim]
+        logits = self.mlp(x).squeeze(-1)  # [B,N-1]
+        logits = logits * m_pair.to(dtype=dtype)  # mask 掉无效
+        return logits
+
+
+
+
+
+# ============================================================
+# 3) 把 break_logits -> a_idx（推理/切换 teacher 时用）
+#    先给一个最简单的贪心版本（带 min/max_len 和 chain 断点）
+#    ⚠️ 训练阶段建议先不用它：先拟合 teacher break
+# ============================================================
+@torch.no_grad()
+def a_idx_from_break_logits_greedy_budget(
+    break_logits: torch.Tensor,     # [B, N-1]
+    node_mask: torch.Tensor,        # [B, N]
+    chain_idx: torch.Tensor | None,
+    min_len: int,
+    max_len: int,
+    Kmax: int,
+    threshold: float = 0.0,         # logits > threshold => candidate
+):
+    """
+    改进点：
+      1) 在窗口内选“logit 最大”的 cut（而不是第一个 True）
+      2) budget-aware：保证剩余长度能被剩余段数以[min_len,max_len]填满
+      3) 仍然保持 chain_break 强制断开
+    """
+    B, N_ = node_mask.shape
+    device = node_mask.device
+    a_idx = torch.zeros((B, N_), device=device, dtype=torch.long)
+    mask_parent = torch.zeros((B, Kmax), device=device, dtype=torch.float32)
+    seg_lens = torch.zeros((B, Kmax), device=device, dtype=torch.long)
+
+    m = node_mask.bool()
+
+    for b in range(B):
+        n = int(m[b].sum().item())
+        if n <= 0:
+            continue
+
+        # chain break
+        chain_break = None
+        if chain_idx is not None:
+            chain_break = (chain_idx[b, 1:n] != chain_idx[b, 0:n-1])  # [n-1]
+
+        logits = break_logits[b, :n-1].clone()                         # [n-1]
+        pred_break = (logits > threshold)
+        if chain_break is not None:
+            pred_break = pred_break | chain_break
+
+        k = 0
+        start = 0
+
+        while start < n and k < Kmax:
+            # 如果已经只剩最后一个 segment 名额，直接吞掉剩余
+            if k == Kmax - 1:
+                a_idx[b, start:n] = k
+                mask_parent[b, k] = 1.0
+                seg_lens[b, k] = n - start
+                start = n
+                break
+
+            # 允许的 cut 范围
+            end_min = min(start + min_len, n)
+            end_max = min(start + max_len, n)
+
+            # 若连 min_len 都不够了，直接吞掉
+            if end_min >= n:
+                a_idx[b, start:n] = k
+                mask_parent[b, k] = 1.0
+                seg_lens[b, k] = n - start
+                start = n
+                break
+
+            # 候选 cut：pos 表示在 pos 和 pos+1 之间断开，所以 cut=pos+1
+            # pos ∈ [end_min-1, end_max-2]
+            pos_lo = end_min - 1
+            pos_hi = end_max - 1  # python range hi is exclusive, so use pos_hi
+
+            # 枚举窗口内所有候选（包含 forced chain break）
+            cand_pos = []
+            cand_score = []
+            for pos in range(pos_lo, pos_hi):
+                if pred_break[pos].item():
+                    cut = pos + 1
+
+                    # -------- budget feasibility check --------
+                    remain_len = n - cut
+                    remain_slots = (Kmax - 1) - k  # 剩余“还可以创建的新段数”（不含当前段）
+                    # 这些 remain_slots 段必须能覆盖 remain_len
+                    min_need = remain_slots * min_len
+                    max_can  = remain_slots * max_len
+                    if remain_len < min_need or remain_len > max_can:
+                        continue  # 这个 cut 会导致后面无解，禁止
+
+                    cand_pos.append(pos)
+                    cand_score.append(logits[pos].item())
+
+            if len(cand_pos) > 0:
+                # 选 logit 最大的候选 cut
+                best_i = int(torch.tensor(cand_score).argmax().item())
+                cut = cand_pos[best_i] + 1
+            else:
+                # 没有合格 break，则尽量取 end_max，同时也要保证预算可行
+                cut = end_max
+                # budget 修正：如果 cut 太靠后导致后面不够分，就往前收
+                remain_slots = (Kmax - 1) - k
+                while True:
+                    remain_len = n - cut
+                    if remain_len >= remain_slots * min_len and remain_len <= remain_slots * max_len:
+                        break
+                    cut -= 1
+                    if cut <= end_min:
+                        cut = end_min
+                        break
+
+            L = cut - start
+            a_idx[b, start:cut] = k
+            mask_parent[b, k] = 1.0
+            seg_lens[b, k] = L
+
+            start = cut
+            k += 1
+
+    return a_idx, mask_parent, seg_lens
+
+
+# ============================================================
+# 4) 你要接到现有结构里时，训练阶段最推荐的用法：
+#    - 仍然用 teacher a_idx 构 parents
+#    - seg_tower 更新 s -> break_head 预测 break_logits
+#    - break_sup_loss 拟合 teacher break
+# ============================================================
+
+
+# =========================
+# quick test
+# =========================
+if __name__ == "__main__":
+    B, N, C = 2, 32, 64
+    Kmax = 16
+    s = torch.randn(B, N, C)
+    node_mask = torch.ones(B, N)
+    # toy: segments [0..3]=0, [4..9]=1, [10..]=2
+    a_idx = torch.zeros(B, N, dtype=torch.long)
+    a_idx[:, 4:10] = 1
+    a_idx[:, 10:] = 2
+    mask_parent = torch.zeros(B, Kmax)
+    mask_parent[:, :3] = 1
+
+    pool = SegmentPoolingWithPosEnc(c_s=C, Kmax=Kmax, n_freq=16, pos_weight=1.0)
+    s_parent, occ, A, aux = pool(s, node_mask, a_idx, mask_parent)
+
+    print("s_parent:", s_parent.shape)
+    print("occ:", occ[0, :5])
+    print("pos01[0]:", aux["pos01"][0, :12])
+    print("seg_len[0,:5]:", aux["seg_len"][0, :5])
