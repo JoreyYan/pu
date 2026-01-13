@@ -12,7 +12,9 @@ Orchestrated, stagewise-structured version of flow_model_HGF_clean.py
 # MacOS 通常用 'MacOSX'
 import torch
 import torch.nn.functional as F
-import numpy as np
+from dataclasses import dataclass
+from typing import Optional, Dict, Any, Tuple
+
 from analysis.draw import plot_mse_analysis
 from mpl_toolkits.mplot3d import Axes3D
 from dataclasses import dataclass
@@ -49,7 +51,7 @@ BottleneckSemanticModule
 )
 from models.downblock import HierarchicalDownsampleIGAModule,HierarchicalDownsampleModuleFast,SimpleSegmentDownIGAModule_v1
 from models.upsample_block import HierarchicalUpsampleIGAModule,HierarchicalUpsampleSemanticModule
-from models.finnalup import UpXiPredictor,FinalCoarseToFineDensenSampleIGAModulev3_2,FinalCoarseToFineDensenSampleIGAModulev2,FinalCoarseToFineDensenSampleIGAModulev3
+from models.finnalup import UpXiPredictorAsoftPos,UpXiPredictorAttnPos_Query,FinalCoarseToFineDensenSampleIGAModulev3_2,FinalCoarseToFineDensenSampleIGAModulev2,FinalCoarseToFineDensenSampleIGAModulev3
 from models.FinalSemUp import FinalCoarseToFineSemanticUpModule
 
 
@@ -282,7 +284,7 @@ class HierarchicalGaussianFieldModel(nn.Module):
             #     OffsetGaussianRigid_cls=OffsetGaussianRigid,
             # )
 
-            self.final_up=UpXiPredictor(c_s=self.ipa.c_s, use_trunk_query=False)
+            self.final_up=UpXiPredictorAttnPos_Query(c_s=self.ipa.c_s, use_trunk_query=False)
 
         else:
             ####sem
@@ -380,7 +382,7 @@ class HierarchicalGaussianFieldModel(nn.Module):
         #     node_embed, edge_embed,rigids_nm, chain_idx,node_mask, input_feats, step, total_steps
         # )
 
-        result,downmetric = self.forward_stage3_hgf(
+        result,reg,downmetric = self.forward_stage3_hgf(
             node_embed, edge_embed,rigids_nm, chain_idx,node_mask, input_feats, step, total_steps
         )
 
@@ -392,7 +394,7 @@ class HierarchicalGaussianFieldModel(nn.Module):
         # result=self.forward_stage4_heads(
         #     s_res, r_res, sideatom_mask, thickness_nm, reg_hgf
         # )
-        return result,downmetric
+        return result,reg,downmetric
 
     # ======================================================
     # 各 Stage 的真实实现（原样搬运）
@@ -458,7 +460,7 @@ class HierarchicalGaussianFieldModel(nn.Module):
         levels_down, reg_down = self.down(
             node_embed,edge_embed, rigids_nm, node_mask,chain_idx, step, total_steps
         )
-        a_idx,sL, zL,rL, mL ,curr_occ,downmetric= levels_down[-1]["aux"]['a_idx'],levels_down[-1]["s"], levels_down[-1]["z"], levels_down[-1]["r"], levels_down[-1]["mask"], levels_down[-1]["curr_occ"],levels_down[-1]['downmetric']
+        A_soft,sL, zL,rL, mask_parent ,curr_occ,downmetric= levels_down[-1]["A_soft"],levels_down[-1]["s"], levels_down[-1]["z"], levels_down[-1]["r"], levels_down[-1]["mask_parent"], levels_down[-1]["curr_occ"],levels_down[-1]['downmetric']
         # sL,zL, rL = self.bottleneck(sL,zL, rL, mL)
         # levels_up, reg_up = self.up(sL, rL, mL, step, total_steps)
 
@@ -488,7 +490,7 @@ class HierarchicalGaussianFieldModel(nn.Module):
             #     res_idx=input_feats["res_idx"],
             # )
 
-            out2 = self.final_up(s_parent=sL, r_parent=rL, a_idx=a_idx, node_mask=node_mask, s_trunk=node_embed)
+            out2 = self.final_up(s_parent=sL, r_parent=rL, A_soft=None, mask_parent=mask_parent,node_mask=node_mask, s_trunk=node_embed)
 
         else:
             # final_levels, reg_final = self.final_up(
@@ -516,8 +518,8 @@ class HierarchicalGaussianFieldModel(nn.Module):
         #
         # reg=reg_down+reg_final
 
-
-        return out2,downmetric
+        out2["fig_dwon"]=levels_down[-1]["fig_dwon"]
+        return out2,reg_down,downmetric
 
         # return s_res,z_res, r_res, reg,downmetric
 
@@ -657,10 +659,6 @@ class HierarchicalGaussianFieldModel(nn.Module):
         curr_rigids = curr_rigids.scale_translation(du.ANG_TO_NM_SCALE)  # 0.1
 
         return curr_rigids, thickness_nm
-import torch
-import torch.nn.functional as F
-from dataclasses import dataclass
-from typing import Optional, Dict, Any, Tuple
 
 # =========================
 # 你工程里应该已有：

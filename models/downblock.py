@@ -4,16 +4,20 @@ import torch.nn.functional as F
 import math
 from typing import Optional, Sequence, Tuple
 from data import utils as du
-from models.pool import LearnOnlyGaussianPoolingV2,coarse_rigids_from_mu_sigma,UniformAnchorSemGeoAssign,UniformAnchorSemAssign,SegmentBreakHead,a_idx_from_break_logits_greedy_budget
+from models.pool import SoftSegmentPoolingWithPosEnc,calculate_uniformity_metrics,coarse_rigids_from_mu_sigma,UniformAnchorSemGeoAssign,UniformAnchorSemAssign,SegmentBreakHead,a_idx_from_break_logits_greedy_budget
 from models.IGA import InvariantGaussianAttention,CoarseIGATower,GaussianUpdateBlock,FastTransformerTower
 from models.SlotIGA import  IGASlotPoolingV1
 from models.SlotIGAv2 import IGASlotPoolingV2
 from data.GaussianRigid import save_gaussian_as_pdb,OffsetGaussianRigid
 from models.loss import HierarchicalGaussianLoss,SymmetricGaussianLoss
 from models.EdgeCoarsen import CoarseEdgeCoarsenAndFuse
-from models.pool import teacher_segment_variable_length,build_parents_from_segments_v3_debug,SegmentPoolingWithPosEnc
+from models.pool import teacher_segment_variable_length,build_parents_from_segments_v3_debug,build_parents_from_A_soft,SegmentPoolingWithPosEnc,build_soft_segments_and_loss,build_A_soft_from_p_break
 from openfold.utils.rigid_utils import Rigid,Rotation
 
+
+import torch
+import matplotlib.pyplot as plt
+import numpy as np
 class HierarchicalDownsampleIGAModule(nn.Module):
     """
     做 K 次:
@@ -513,7 +517,7 @@ class SimpleSegmentDownIGAModule_v1(nn.Module):
         self.eps = eps
 
 
-        self.pool=SegmentPoolingWithPosEnc(c_s=c_s, Kmax=Kmax, n_freq=16, pos_weight=1.0)
+        self.pool=SoftSegmentPoolingWithPosEnc(c_s=c_s,  n_freq=16, pos_weight=1.0)
 
         self.seg_towers = nn.ModuleList()
 
@@ -573,6 +577,7 @@ class SimpleSegmentDownIGAModule_v1(nn.Module):
         chain_idx: Optional[torch.Tensor] = None, # [B,N]
         step: int = 0,
         total_steps: int = 1,
+            log_img_every: int = 500,
     ):
         B, N, C = s_f.shape
         Kmax = self.Kmax
@@ -589,8 +594,13 @@ class SimpleSegmentDownIGAModule_v1(nn.Module):
         s_out,_,_ = self.seg_towers[0](s_f, z_f, r_f, node_mask)
         break_logits = self.break_head(s_out, node_mask, z_f=None )
 
-        a_idx, mask_parent, seg_lens=a_idx_from_break_logits_greedy_budget(break_logits,node_mask,chain_idx,min_len=2,max_len=12,Kmax=int((N/6)))
+        A_soft, regs, aux=build_soft_segments_and_loss(break_logits,node_mask,chain_idx,Kmax=int(N/2),min_len=2,max_len=4)
+        # a_idx, mask_parent, seg_lens=a_idx_from_break_logits_greedy_budget(break_logits,node_mask,chain_idx,min_len=2,max_len=12,Kmax=int((N/2)))
 
+        if step% log_img_every == 0:
+            fig_dwon=visualize_asoft_diagnosis(A_soft,save_path='asoft.png')
+        else:
+            fig_dwon=None
         # ----------------------------------------------------
         # 2) build parents geometry (keep your impl)
         #    NOTE: x_ca comes from your r_f fine gaussian mean (or CA trans)
@@ -599,31 +609,16 @@ class SimpleSegmentDownIGAModule_v1(nn.Module):
         # 如果你希望 x_ca=rigid trans(=CA)，而不是 gaussian_mean，也可以换成 r_f.get_trans()
         x_ca = r_f.get_trans() if hasattr(r_f, "get_trans") else r_f.get_gaussian_mean()
 
-        parents = build_parents_from_segments_v3_debug(
-            x_ca=x_ca,
-            node_mask=node_mask,
-            a_idx=a_idx,
-            mask_parent=mask_parent,
-            Kmax=mask_parent.shape[-1],
+        r_parent, occ_p, mask_parent,mask_soft = build_parents_from_A_soft(
+            x=x_ca, A=A_soft, node_mask=node_mask
         )
-        # 期望 parents 里含有 r_parent（OffsetGaussianRigid [B,Kmax]）和可能的 mu/R/s
-        # 你如果 build_parents... 直接返回 r_parent，就把下面这一行改一下：
-
-
-        B, K = parents.mu.shape[:2]
-        parent_rot = Rotation(rot_mats=parents.R)
-        parent_scaling_log = torch.log(parents.s.clamp_min(1e-6))
-        parent_local_mean = torch.zeros((B, K, 3), device=device, dtype=parents.mu.dtype)
-        r_parent = OffsetGaussianRigid(parent_rot, parents.mu, parent_scaling_log, parent_local_mean)
-
-
 
 
 
         # ----------------------------------------------------
         # 3) (optional) add positional embedding before pooling
         # ----------------------------------------------------
-        s_parent, occ_parent, A, aux = self.pool(s_f, node_mask, a_idx, mask_parent)
+        s_parent, occ_parent, A, aux = self.pool(s_f, node_mask, A_soft)
         # ----------------------------------------------------
         # 4) pool s to parent
         # ----------------------------------------------------
@@ -642,28 +637,128 @@ class SimpleSegmentDownIGAModule_v1(nn.Module):
         # active K (debug)
         active_K = mask_parent.sum(dim=1).float().mean()
 
+        # metrics_seglens = calculate_uniformity_metrics(seg_lens, mask_parent)
+        # num_unique_clusters = len(torch.unique(a_idx))
+        # strict_ratio = N / num_unique_clusters
         downmetric = {
             "seg_down_active_K": active_K.detach(),
             "seg_down_occ_mean": occ_parent.mean().detach(),
             "seg_down_occ_max": occ_parent.max().detach(),
             "seg_down_occ_min": occ_parent.min().detach(),
-            "seg_down_ratip": N/a_idx.max(),
+            "seg_down_ratio": N/active_K,
         }
+        downmetric=downmetric
 
         levels = [{
-            "A": A,                        # [B,N,K]
+            "A_soft": A_soft,                        # [B,N,K]
             "s": s_parent,                 # [B,K,C]
             "z": z_parent,                 # [B,K,K,Cz] or None
             "r": r_parent,                 # OffsetGaussianRigid [B,K]
-            "mask": mask_parent,           # [B,K]
+            "mask_parent": mask_parent,           # [B,K]
             "curr_occ": occ_parent,         # [B,K]
-            "aux": {
-                "a_idx": a_idx,
-                "seg_lens": seg_lens,
-            },
+            # "aux": {
+            #     "a_idx": a_idx,
+            #     "seg_lens": seg_lens,
+            # },
             "downmetric": downmetric,
+            "fig_dwon":fig_dwon
         }]
 
         # 你以前 forward 返回 (levels, reg_total)
-        reg_total = torch.zeros((), device=device, dtype=s_f.dtype)
-        return levels, reg_total
+
+        return levels, regs
+
+
+
+def visualize_asoft_diagnosis(A_soft, node_mask=None, save_path=None, title="A_soft Diagnosis"):
+    """
+    专门诊断 Soft Segmentation 是否健康的函数
+
+    Args:
+        A_soft: Tensor [B, N, K] 或 [N, K]
+        node_mask: Tensor [B, N] 或 [N] (可选，用于过滤 padding)
+        save_path: str (可选，保存路径)
+    """
+    # 1. 数据预处理：取 Batch 中第一个非空样本
+    if A_soft.dim() == 3:
+        idx = 0
+        # 如果有 mask，找一个长度适中的样本，而不是空的
+        if node_mask is not None:
+            lengths = node_mask.sum(dim=1)
+            # 找最接近平均长度的样本，或者直接取第一个
+            idx = torch.argmax(lengths).item()  # 取最长的那个看，最清晰
+            mask = node_mask[idx].bool().cpu()
+            A = A_soft[idx].detach()[mask].cpu().numpy()  # [N_valid, K]
+        else:
+            A = A_soft[0].detach().cpu().numpy()
+    else:
+        A = A_soft.detach().cpu().numpy()
+
+    # 转置一下：X轴=原子序列(N)，Y轴=父节点ID(K)
+    # 这样符合直觉：从左到右随着序列延伸，父节点ID逐渐增加
+    A_map = A.T  # [K, N]
+    K, N = A_map.shape
+
+    # 2. 计算硬切分路径 (Argmax)
+    hard_path = np.argmax(A_map, axis=0)  # [N]
+
+    # 3. 计算每个簇的占用率 (Occupancy)
+    occupancy = np.sum(A_map, axis=1)  # [K]
+    active_k_indices = np.where(occupancy > 0.1)[0]
+    active_k_count = len(active_k_indices)
+    max_k_used = active_k_indices.max() if active_k_count > 0 else 0
+
+    # ================= 绘图 =================
+    fig = plt.figure(figsize=(12, 6))
+    gs = fig.add_gridspec(1, 2, width_ratios=[4, 1], wspace=0.05)
+
+    # --- 左图：Heatmap (A_soft) ---
+    ax1 = fig.add_subplot(gs[0])
+    # 使用 log 刻度可以让极小值显形，但这会夸大噪声。
+    # 这里使用线性刻度，但 vmax 设小一点(0.8)让方块更亮
+    im = ax1.imshow(A_map, aspect='auto', cmap='viridis', origin='lower', vmin=0, vmax=1.0)
+
+    # 画出红色的硬切分线
+    ax1.plot(np.arange(N), hard_path, color='red', linewidth=1.5, alpha=0.7, label='Hard Path (Argmax)')
+
+    # 装饰
+    ax1.set_title(f"{title}\nPoints(N)={N}, Active K={active_k_count}, Used K range=0~{max_k_used}")
+    ax1.set_xlabel("Sequence Index (N)")
+    ax1.set_ylabel("Parent Cluster ID (K)")
+    ax1.legend(loc='upper left')
+    ax1.grid(True, which='both', color='white', alpha=0.1)
+
+    # 只显示用到的 K 范围，避免上面留一大片空白
+    if max_k_used < K - 1:
+        ax1.set_ylim(-0.5, max_k_used + 5)
+
+    # --- 右图：Occupancy Bar (负载均衡情况) ---
+    ax2 = fig.add_subplot(gs[1], sharey=ax1)
+    y_pos = np.arange(K)
+    ax2.barh(y_pos, occupancy, color='teal', alpha=0.8)
+    ax2.set_xlabel("Mass (Num Points)")
+    ax2.set_title("Cluster Occupancy")
+    ax2.grid(True, axis='x', alpha=0.3)
+
+    # 在条形图上标数值
+    for i, v in enumerate(occupancy):
+        if v > 0.1 and i <= max_k_used + 5:
+            ax2.text(v, i, f" {v:.1f}", va='center', fontsize=8)
+
+    # 隐藏右图 Y 轴标签（共享轴）
+    plt.setp(ax2.get_yticklabels(), visible=False)
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150)
+        plt.close()
+    else:
+        plt.show()
+
+    return fig
+
+# ================= 使用示例 =================
+# 在你的 forward 或者 validation loop 里：
+# A_soft 是模型输出的 [B, N, K]
+# visualize_asoft_diagnosis(A_soft, node_mask, save_path="debug_asoft.png")

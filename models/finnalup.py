@@ -2,9 +2,13 @@
 from dataclasses import dataclass
 from typing import Optional, Tuple, Dict
 import math
-import torch
+
 import torch.nn as nn
 import torch.nn.functional as F
+import os
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
 # 你已有：
 # - InvariantGaussianAttention (from models.IGA import InvariantGaussianAttention)
 # - StructureModuleTransition
@@ -18,7 +22,8 @@ from models.IGA import InvariantGaussianAttention,CoarseIGATower,GaussianUpdateB
 from chroma.layers.basic import FourierFeaturization
 from models.EdgeCoarsen import CoarseEdgeCoarsenAndFuse
 from models.pool import segment_pos01_from_assignment,Pos01FourierEncoder
-
+from data.GaussianRigid import save_gaussian_as_pdb,OffsetGaussianRigid
+from openfold.utils.rigid_utils import Rigid,Rotation
 class ResIdxFourierEmbedding(nn.Module):
     """
     res_idx -> continuous Fourier positional embedding
@@ -1957,10 +1962,12 @@ class UpXiPredictor(nn.Module):
         s_i  = s_k.gather(1, idx[..., None].expand(B, N, 3))                        # [B,N,3]
         R_i  = R_k.gather(1, idx[..., None, None].expand(B, N, 3, 3))               # [B,N,3,3]
 
+        G_n=OffsetGaussianRigid( rots=Rotation(R_i), trans=mu_i,  scaling_log=torch.log(s_i), local_mean=torch.zeros_like(mu_i) )
+        x_hat=G_n.apply(xi_hat* s_i)
 
-
-        local = xi_hat * s_i
-        x_hat = mu_i + torch.einsum("bnij,bnj->bni", R_i, local)
+        #
+        # local = xi_hat * s_i
+        # x_hat = mu_i + torch.einsum("bnij,bnj->bni", R_i, local)
         x_hat = x_hat * node_mask[..., None].to(dtype=dtype)
 
         return {
@@ -1968,9 +1975,537 @@ class UpXiPredictor(nn.Module):
             "x_hat": x_hat*10,     # [B,N,3]
             "pos01": pos01,     # [B,N]
             "r_parent":r_parent.scale_translation(10),
+            "r_child": G_n.scale_translation(10),
             "a_idx":a_idx
         }
 
+
+
+# 你已有：Pos01FourierEncoder, OffsetGaussianRigid, Rotation, extract_parent_params
+# - Pos01FourierEncoder(c_s, n_freq)
+# - extract_parent_params(r_parent) -> (mu_k [B,K,3], R_k [B,K,3,3], s_k [B,K,3])
+
+
+
+class UpXiPredictorAsoftPos(nn.Module):
+    """
+    Upsample without a_idx.
+    Use A_soft -> router w, compute soft pos01 from w, inject pos emb, predict xi_hat, decode with parent frame.
+
+    Inputs:
+      s_parent:   [B,K,C]
+      r_parent:   OffsetGaussianRigid [B,K]
+      A_soft:     [B,N,K]
+      mask_parent:[B,K] 0/1
+      node_mask:  [B,N] 0/1
+      s_trunk:    [B,N,C] optional
+
+    Outputs:
+      xi_hat, x_hat, pos01, w, parent_idx, r_child(optional)
+    """
+
+    def __init__(
+        self,
+        c_s: int,
+        n_freq: int = 9,
+        pos_weight: float = 1.0,
+        use_trunk_query: bool = False,
+        mlp_hidden: int = 256,
+        xi_tanh_scale: float = 1.5,
+
+        # routing/geometry options
+        hard_forward: bool = True,      # ✅ 推荐：hard forward + soft backward
+        geom_soft_mu_s: bool = True,    # ✅ 推荐：mu,s 用 w(可导)；R 用 argmax(稳定)
+        detach_pos01: bool = False,     # pos01 是否 stop-grad（一般不需要，但可开）
+    ):
+        super().__init__()
+        self.c_s = int(c_s)
+        self.pos_weight = float(pos_weight)
+        self.use_trunk_query = bool(use_trunk_query)
+        self.xi_tanh_scale = float(xi_tanh_scale)
+
+        self.hard_forward = bool(hard_forward)
+        self.geom_soft_mu_s = bool(geom_soft_mu_s)
+        self.detach_pos01 = bool(detach_pos01)
+
+        # 你已有的 Pos01FourierEncoder
+        self.pos_enc = Pos01FourierEncoder(c_s=self.c_s, n_freq=n_freq)
+
+        in_dim = self.c_s * (2 if self.use_trunk_query else 1)  # [s_pi] (+ [s_trunk])
+        self.q_proj = nn.Sequential(
+            nn.LayerNorm(in_dim),
+            nn.Linear(in_dim, self.c_s),
+            nn.SiLU(),
+            nn.Linear(self.c_s, self.c_s),
+        )
+
+        self.mlp = nn.Sequential(
+            nn.LayerNorm(self.c_s),
+            nn.Linear(self.c_s, mlp_hidden),
+            nn.SiLU(),
+            nn.Linear(mlp_hidden, mlp_hidden),
+            nn.SiLU(),
+            nn.Linear(mlp_hidden, 3),
+        )
+
+    @staticmethod
+    def _row_normalize(w: torch.Tensor, eps: float = 1e-8):
+        return w / w.sum(dim=-1, keepdim=True).clamp_min(eps)
+
+    @staticmethod
+    def build_pos01_from_router(w: torch.Tensor, node_mask: torch.Tensor, eps: float = 1e-8):
+        """
+        可导的“段内位置”构造（关键）：
+        对每个 parent k：
+          cum_k[i] = Σ_{t<=i} w[t,k]
+          total_k  = Σ_{t}    w[t,k]
+          pos_{i,k} = cum_k[i] / total_k   ∈ [0,1]
+        然后对 residue i 做混合：
+          pos01[i] = Σ_k w[i,k] * pos_{i,k}
+        这样得到一个 [B,N] 的连续 pos01，且天然随 sequence 单调推进（对角块倾向更强）。
+        """
+        # w: [B,N,K] rows already sum to 1 on valid residues
+        m = node_mask.float().unsqueeze(-1)  # [B,N,1]
+        w = w * m
+
+        # cum along N
+        cum = torch.cumsum(w, dim=1)  # [B,N,K]
+        total = w.sum(dim=1, keepdim=True).clamp_min(eps)  # [B,1,K]
+        pos_k = cum / total  # [B,N,K] in [0,1]
+
+        pos01 = (w * pos_k).sum(dim=-1)  # [B,N]
+        pos01 = pos01 * node_mask.float()
+        return pos01
+
+    def forward(
+        self,
+        s_parent: torch.Tensor,      # [B,K,C]
+        r_parent,                    # OffsetGaussianRigid [B,K]
+        A_soft: torch.Tensor,        # [B,N,K]
+        mask_parent: torch.Tensor,   # [B,K] 0/1
+        node_mask: torch.Tensor,     # [B,N] 0/1
+        s_trunk: torch.Tensor = None,# [B,N,C]
+        eps: float = 1e-8,
+        ang_scale: float = 10.0,
+    ):
+        B, K, C = s_parent.shape
+        _, N, K2 = A_soft.shape
+        assert K2 == K, f"A_soft last dim {K2} must match K {K}"
+
+        dtype = s_parent.dtype
+        device = s_parent.device
+
+        mN = node_mask.to(dtype=dtype)[:, :, None]        # [B,N,1]
+        mK = mask_parent.to(dtype=dtype)[:, None, :]      # [B,1,K]
+
+        # ------------------------------------
+        # 1) router w from A_soft
+        # ------------------------------------
+        w = A_soft.to(dtype=dtype) * mN * mK              # [B,N,K]
+        w = self._row_normalize(w, eps=eps) * mN          # padded rows -> 0
+
+        # ST-hard forward (avoid averaging collapse), keep gradient through w
+        parent_idx = torch.argmax(w, dim=-1)              # [B,N] (no grad)
+        if self.hard_forward:
+            w_hard = F.one_hot(parent_idx, num_classes=K).to(dtype=dtype) * mN
+            w_use = w_hard - w.detach() + w              # straight-through
+        else:
+            w_use = w
+        # viz_w(w, node_mask, w_use=w_use, title="router_w", b=0, k_max_show=128,save_path='hard.png')
+        # ------------------------------------
+        # 2) pos01 from router (可导)
+        # ------------------------------------
+        pos01 = self.build_pos01_from_router(w, node_mask, eps=eps)  # [B,N] float
+        if self.detach_pos01:
+            pos01_in = pos01.detach()
+        else:
+            pos01_in = pos01
+        pos01_in = pos01_in.to(device=device, dtype=torch.float32)
+
+        pos_emb = self.pos_enc(pos01_in, node_mask).to(dtype=dtype)  # [B,N,C]
+
+        # ------------------------------------
+        # 3) semantic mix + pos emb
+        # ------------------------------------
+        s_pi = torch.einsum("bnk,bkc->bnc", w_use, s_parent)          # [B,N,C]
+        s_pi = (s_pi + self.pos_weight * pos_emb) * node_mask[..., None].to(dtype=dtype)
+
+        if self.use_trunk_query:
+            assert s_trunk is not None, "use_trunk_query=True requires s_trunk."
+            q_in = torch.cat([s_trunk, s_pi], dim=-1)                # [B,N,2C]
+        else:
+            q_in = s_pi                                              # [B,N,C]
+
+        q = self.q_proj(q_in) * node_mask[..., None].to(dtype=dtype)  # [B,N,C]
+
+        # ------------------------------------
+        # 4) xi_hat
+        # ------------------------------------
+        xi_hat = self.mlp(q) * node_mask[..., None].to(dtype=dtype)   # [B,N,3]
+        xi_hat = torch.tanh(xi_hat) * self.xi_tanh_scale
+
+        # ------------------------------------
+        # 5) decode geometry
+        # ------------------------------------
+        mu_k, R_k, s_k = extract_parent_params(r_parent)              # mu:[B,K,3], R:[B,K,3,3], s:[B,K,3]
+
+        # R 用 argmax（稳定）
+        idx = parent_idx.clamp(0, K - 1)
+        R_i = R_k.gather(1, idx[..., None, None].expand(B, N, 3, 3))  # [B,N,3,3]
+
+        if self.geom_soft_mu_s:
+            # ✅ mu,s 用 w_use（可导或ST可导）
+            mu_i = torch.einsum("bnk,bkd->bnd", w_use, mu_k)          # [B,N,3]
+            s_i  = torch.einsum("bnk,bkd->bnd", w_use, s_k)           # [B,N,3]
+        else:
+            mu_i = mu_k.gather(1, idx[..., None].expand(B, N, 3))
+            s_i  = s_k.gather(1, idx[..., None].expand(B, N, 3))
+
+        s_i = s_i.clamp_min(1e-6)
+        local = xi_hat * s_i
+        x_hat = mu_i + torch.einsum("bnij,bnj->bni", R_i, local)
+        x_hat = x_hat * node_mask[..., None].to(dtype=dtype)
+
+        # 如果你仍想输出 child 的 rigid（用于 debug 存 pdb）
+        # 注意：这里的 child 旋转就是 R_i，尺度 s_i，trans mu_i
+        G_child = OffsetGaussianRigid(
+            rots=Rotation(rot_mats=R_i),
+            trans=mu_i,
+            scaling_log=torch.log(s_i),
+            local_mean=torch.zeros_like(mu_i),
+        )
+
+        return {
+            'a_idx': torch.argmax(w_use, dim=-1) ,
+            "w": w,                        # [B,N,K] soft router
+            "w_use": w_use,                # [B,N,K] used router (ST-hard or soft)
+            "parent_idx": parent_idx,      # [B,N]
+            "pos01": pos01,                # [B,N] (soft segment position)
+            "xi_hat": xi_hat,              # [B,N,3]
+            "x_hat": x_hat * ang_scale,    # [B,N,3]
+            "r_parent": r_parent.scale_translation(ang_scale),
+            "r_child": G_child.scale_translation(ang_scale),}
+
+class UpXiPredictorAttnPos_Query(nn.Module):
+    """
+    Upsample without a_idx.
+    Router = learned cross-attention from trunk->parents, optionally with A_soft prior.
+    Then build pos01 from router w, inject pos emb, predict xi_hat, decode with parent frame.
+
+    Inputs:
+      s_parent:   [B,K,C]
+      r_parent:   OffsetGaussianRigid [B,K]
+      node_mask:  [B,N] 0/1
+      mask_parent:[B,K] 0/1
+      s_trunk:    [B,N,C]  (recommended)
+      A_soft:     [B,N,K] optional (recommended as prior / band constraint)
+
+    Outputs:
+      w_soft, w_use, parent_idx, pos01, xi_hat, x_hat, r_child(optional)
+    """
+
+    def __init__(
+            self,
+            c_s: int,
+            n_freq: int = 9,
+            pos_weight: float = 1.0,
+            use_trunk_query: bool = False,
+            mlp_hidden: int = 256,
+            xi_tanh_scale: float = 1.5,
+
+            # router knobs
+            tau: float = 1.0,  # softmax temperature
+            use_ln: bool = True,  # layernorm for router stability
+            use_mu_bias: bool = True,  # add parent mu_k positional bias into keys
+            prior_strength: float = 2.0,  # beta in logits += beta*log(A_soft)
+            prior_floor: float = 1e-6,  # avoid log(0)
+
+            # routing/geometry options
+            hard_forward: bool = True,  # ST-hard forward (recommended)
+            geom_soft_mu_s: bool = True,  # mu,s via w_use; R via argmax
+            detach_pos01: bool = False,  # stop-grad on pos01 if needed
+    ):
+        super().__init__()
+        self.c_s = int(c_s)
+        self.pos_weight = float(pos_weight)
+        self.use_trunk_query = bool(use_trunk_query)
+        self.xi_tanh_scale = float(xi_tanh_scale)
+
+        self.tau = float(tau)
+        self.use_ln = bool(use_ln)
+        self.use_mu_bias = bool(use_mu_bias)
+        self.prior_strength = float(prior_strength)
+        self.prior_floor = float(prior_floor)
+
+        self.hard_forward = bool(hard_forward)
+        self.geom_soft_mu_s = bool(geom_soft_mu_s)
+        self.detach_pos01 = bool(detach_pos01)
+
+        # ----- pos encoding (same as your AsoftPos) -----
+        self.pos_enc = Pos01FourierEncoder(c_s=self.c_s, n_freq=n_freq)
+
+        # ----- router projections -----
+        if self.use_ln:
+            self.ln_q = nn.LayerNorm(self.c_s)
+            self.ln_k = nn.LayerNorm(self.c_s)
+            self.ln_v = nn.LayerNorm(self.c_s)
+
+        self.q_proj = nn.Linear(self.c_s, self.c_s, bias=False)
+        self.k_proj = nn.Linear(self.c_s, self.c_s, bias=False)
+        self.v_proj = nn.Linear(self.c_s, self.c_s, bias=False)
+        self.mu_proj = nn.Linear(3, self.c_s, bias=False)  # parent mu bias
+
+        # ----- xi predictor -----
+        in_dim = self.c_s * 2 if self.use_trunk_query else self.c_s
+        self.fuse = nn.Sequential(
+            nn.LayerNorm(in_dim),
+            nn.Linear(in_dim, self.c_s),
+            nn.SiLU(),
+            nn.Linear(self.c_s, self.c_s),
+        )
+        self.mlp = nn.Sequential(
+            nn.LayerNorm(self.c_s),
+            nn.Linear(self.c_s, mlp_hidden),
+            nn.SiLU(),
+            nn.Linear(mlp_hidden, mlp_hidden),
+            nn.SiLU(),
+            nn.Linear(mlp_hidden, 3),
+        )
+
+    @staticmethod
+    def _row_normalize(w: torch.Tensor, eps: float = 1e-8):
+        return w / w.sum(dim=-1, keepdim=True).clamp_min(eps)
+
+    @staticmethod
+    def build_pos01_from_router(w: torch.Tensor, node_mask: torch.Tensor, eps: float = 1e-8):
+        """
+        Same as your AsoftPos: pos01 from cumulative mass inside each parent column, then mix by w.
+        """
+        m = node_mask.float().unsqueeze(-1)  # [B,N,1]
+        w = w * m
+
+        cum = torch.cumsum(w, dim=1)  # [B,N,K]
+        total = w.sum(dim=1, keepdim=True).clamp_min(eps)  # [B,1,K]
+        pos_k = cum / total  # [B,N,K] in [0,1]
+
+        pos01 = (w * pos_k).sum(dim=-1)  # [B,N]
+        return pos01 * node_mask.float()
+
+    def forward(
+            self,
+            s_parent: torch.Tensor,  # [B,K,C]
+            r_parent,  # OffsetGaussianRigid [B,K]
+            node_mask: torch.Tensor,  # [B,N]
+            mask_parent: torch.Tensor,  # [B,K]
+            s_trunk: torch.Tensor,  # [B,N,C]
+            A_soft: torch.Tensor = None,  # [B,N,K] optional prior
+            eps: float = 1e-8,
+            ang_scale: float = 10.0,
+    ):
+        B, K, C = s_parent.shape
+        B2, N, C2 = s_trunk.shape
+        assert B2 == B and C2 == C, "s_trunk must be [B,N,C] matching s_parent C"
+        dtype, device = s_parent.dtype, s_parent.device
+
+        mN = node_mask.to(dtype=dtype)[:, :, None]  # [B,N,1]
+        mK = mask_parent.to(dtype=dtype)[:, None, :]  # [B,1,K]
+
+        # ------------------------------------------------
+        # 1) Router: cross-attn logits [B,N,K]
+        # ------------------------------------------------
+        # parent geometry bias
+        mu_k, R_k, s_k = extract_parent_params(r_parent)  # mu:[B,K,3], R:[B,K,3,3], s:[B,K,3]
+
+        if self.use_ln:
+            q_in = self.ln_q(s_trunk)
+            k_in = self.ln_k(s_parent)
+            v_in = self.ln_v(s_parent)
+        else:
+            q_in, k_in, v_in = s_trunk, s_parent, s_parent
+
+        q = self.q_proj(q_in)  # [B,N,C]
+        k = self.k_proj(k_in)  # [B,K,C]
+        v = self.v_proj(v_in)  # [B,K,C]
+
+        if self.use_mu_bias:
+            k = k + self.mu_proj(mu_k)  # [B,K,C]
+
+        logits = torch.einsum("bnc,bkc->bnk", q, k) / math.sqrt(max(C, 1))
+        logits = logits / max(self.tau, 1e-6)
+
+        # mask invalid parents/residues
+        logits = logits.masked_fill(mask_parent[:, None, :] < 0.5, -1e4)
+        logits = logits.masked_fill(node_mask[:, :, None] < 0.5, -1e4)
+
+        # --- optional prior from A_soft (VERY recommended) ---
+        # This is the key to avoid "拐弯/跨段": constrain router to stay near the segmentation band.
+        if A_soft is not None:
+            assert A_soft.shape == (B, N, K), f"A_soft must be [B,N,K], got {A_soft.shape}"
+            prior = (A_soft.to(dtype=dtype) * mN * mK).clamp_min(self.prior_floor)
+            logits = logits + self.prior_strength * prior.log()
+
+        # soft router
+        w_soft = F.softmax(logits, dim=-1) * mN  # [B,N,K], padded rows->0
+        w_soft = self._row_normalize(w_soft, eps=eps) * mN
+
+        # ST-hard forward
+        parent_idx = torch.argmax(w_soft, dim=-1)  # [B,N] (no grad)
+        if self.hard_forward:
+            w_hard = F.one_hot(parent_idx, num_classes=K).to(dtype=dtype) * mN
+            w_use = w_hard - w_soft.detach() + w_soft
+        else:
+            w_use = w_soft
+
+        # ------------------------------------------------
+        # 2) pos01 from router (differentiable)
+        # ------------------------------------------------
+        pos01 = self.build_pos01_from_router(w_soft, node_mask, eps=eps)  # [B,N]
+        pos01_in = pos01.detach() if self.detach_pos01 else pos01
+        pos_emb = self.pos_enc(pos01_in.to(device=device, dtype=torch.float32), node_mask).to(dtype=dtype)
+
+        # ------------------------------------------------
+        # 3) semantic mix + pos emb
+        # ------------------------------------------------
+        s_pi = torch.einsum("bnk,bkc->bnc", w_use, s_parent)  # [B,N,C]
+        s_pi = (s_pi + self.pos_weight * pos_emb) * node_mask[..., None].to(dtype=dtype)
+
+        if self.use_trunk_query:
+            q_in2 = torch.cat([s_trunk, s_pi], dim=-1)  # [B,N,2C]
+        else:
+            q_in2 = s_pi  # [B,N,C]
+
+        feat = self.fuse(q_in2) * node_mask[..., None].to(dtype=dtype)
+
+        # ------------------------------------------------
+        # 4) xi_hat
+        # ------------------------------------------------
+        xi_hat = self.mlp(feat) * node_mask[..., None].to(dtype=dtype)
+        xi_hat = torch.tanh(xi_hat) * self.xi_tanh_scale
+
+        # ------------------------------------------------
+        # 5) decode geometry (self-consistent)
+        # ------------------------------------------------
+        # R: use argmax for orthogonality stability
+        idx = parent_idx.clamp(0, K - 1)
+        R_i = R_k.gather(1, idx[..., None, None].expand(B, N, 3, 3))  # [B,N,3,3]
+
+        if self.geom_soft_mu_s:
+            mu_i = torch.einsum("bnk,bkd->bnd", w_use, mu_k)  # [B,N,3]
+            s_i = torch.einsum("bnk,bkd->bnd", w_use, s_k)  # [B,N,3]
+        else:
+            mu_i = mu_k.gather(1, idx[..., None].expand(B, N, 3))
+            s_i = s_k.gather(1, idx[..., None].expand(B, N, 3))
+
+        s_i = s_i.clamp_min(1e-6)
+        local = xi_hat * s_i
+        x_hat = mu_i + torch.einsum("bnij,bnj->bni", R_i, local)
+        x_hat = x_hat * node_mask[..., None].to(dtype=dtype)
+
+        G_child = OffsetGaussianRigid(
+            rots=Rotation(rot_mats=R_i),
+            trans=mu_i,
+            scaling_log=torch.log(s_i),
+            local_mean=torch.zeros_like(mu_i),
+        )
+
+        return {
+            # hard index only for logging/debug
+            "a_idx": idx,
+            "w": w_soft,  # [B,N,K] (soft, differentiable)
+            "w_use": w_use,  # [B,N,K] (ST-hard forward)
+            "parent_idx": parent_idx,  # [B,N]
+            "pos01": pos01,  # [B,N]
+            "xi_hat": xi_hat,  # [B,N,3]
+            "x_hat": x_hat * ang_scale,  # [B,N,3]
+            "r_parent": r_parent.scale_translation(ang_scale),
+            "r_child": G_child.scale_translation(ang_scale),
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+@torch.no_grad()
+def viz_w(
+    w: torch.Tensor,              # [B,N,K]
+    node_mask: torch.Tensor,      # [B,N]
+    w_use: torch.Tensor = None,   # [B,N,K] optional
+    title: str = "w",
+    b: int = 0,
+    k_max_show: int | None = None,  # e.g. 128 to avoid ultra-wide
+    save_path: str | None = None,   # if None -> plt.show()
+):
+    assert w.dim() == 3
+    B, N, K = w.shape
+    assert 0 <= b < B
+
+    # valid N
+    n_valid = int((node_mask[b] > 0.5).sum().item())
+    n_valid = max(n_valid, 1)
+
+    # slice
+    w_b = w[b, :n_valid]  # [n_valid, K]
+    if k_max_show is not None:
+        K_show = min(int(k_max_show), K)
+        w_b = w_b[:, :K_show]
+    else:
+        K_show = K
+
+    # to numpy
+    W = w_b.detach().float().cpu().numpy()  # [n_valid, K_show]
+    a = np.argmax(W, axis=1)                # [n_valid]
+
+    fig, ax = plt.subplots(figsize=(max(6, K_show * 0.05), max(4, n_valid * 0.03)))
+
+    im = ax.imshow(
+        W,
+        aspect="auto",
+        origin="upper",
+        interpolation="nearest",
+    )
+    ax.plot(a, np.arange(n_valid), linewidth=1.0)  # argmax path
+
+    ax.set_xlabel("parent k")
+    ax.set_ylabel("residue i")
+    ax.set_title(f"{title} | b={b} | N_valid={n_valid} | K_show={K_show}")
+    fig.colorbar(im, ax=ax, fraction=0.02, pad=0.02)
+
+    # optional: compare w_use
+    if w_use is not None:
+        wuse_b = w_use[b, :n_valid, :K_show].detach().float().cpu().numpy()
+        a2 = np.argmax(wuse_b, axis=1)
+
+        fig2, ax2 = plt.subplots(figsize=(max(6, K_show * 0.05), max(4, n_valid * 0.03)))
+        im2 = ax2.imshow(
+            wuse_b,
+            aspect="auto",
+            origin="upper",
+            interpolation="nearest",
+        )
+        ax2.plot(a2, np.arange(n_valid), linewidth=1.0)
+        ax2.set_xlabel("parent k")
+        ax2.set_ylabel("residue i")
+        ax2.set_title(f"{title} (w_use) | b={b} | N_valid={n_valid} | K_show={K_show}")
+        fig2.colorbar(im2, ax=ax2, fraction=0.02, pad=0.02)
+
+    if save_path is not None:
+        # os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        fig.savefig(save_path, dpi=180, bbox_inches="tight")
+        if w_use is not None:
+            base, ext = os.path.splitext(save_path)
+            fig2.savefig(base + "_wuse" + ext, dpi=180, bbox_inches="tight")
+        plt.close(fig)
+        if w_use is not None:
+            plt.close(fig2)
+    else:
+        plt.show()
 
 # =========================
 # 5) 极简用法示例
@@ -2012,3 +2547,5 @@ if __name__ == "__main__":
     up2 = UpXiPredictor(c_s=C, use_trunk_query=True)
     out2 = up2(s_parent=s_parent, r_parent=r_parent, a_idx=a_idx, node_mask=node_mask, s_trunk=s_trunk)
     print(out2["xi_hat"].shape, out2["x_hat"].shape)
+
+

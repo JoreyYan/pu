@@ -8,6 +8,8 @@ import torch.nn.functional as F
 from data.GaussianRigid import OffsetGaussianRigid,save_gaussian_as_pdb
 from openfold.utils.rigid_utils import Rotation
 from models.IGA import fused_gaussian_overlap_score
+from models.kernel.kernel import cov_to_R_scale_no_eigh_robust
+
 def gaussian_geo_features(Sigma: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """
     Sigma: [B, N, 3, 3] (对称/近似SPD)
@@ -1100,6 +1102,93 @@ class ParentParams:
     s: torch.Tensor
     mask_parent: torch.Tensor
 
+
+
+def build_parents_from_A_soft(
+    x: torch.Tensor,          # [B,N,3]
+    A: torch.Tensor,          # [B,N,K]
+    node_mask: torch.Tensor,  # [B,N]
+    jitter: float = 1e-6,
+    eps: float = 1e-8,
+        # ---- mask_parent threshold knobs ----
+        occ_thresh_abs: float = 1e-4,  # 绝对阈值（适合 hard-cutoff 后的“严格 0”列）
+        occ_thresh_rel: float = 0.05,  # 相对阈值：相对 (n_valid/K) 的比例
+):
+    """
+    返回：
+      mu:        [B,K,3]
+      cov:       [B,K,3,3]  (仍返回，方便 debug/兼容旧代码)
+      R:         [B,K,3,3]  (主轴旋转，det=+1)
+      scale:     [B,K,3]    (半轴尺度 = sqrt(eigvals))
+      eigvals:   [B,K,3]    (方差特征值，降序)
+      occ:       [B,K]
+      mask_soft: [B,K]
+    """
+    B, N, _ = x.shape
+    _, _, K = A.shape
+    dtype, device = x.dtype, x.device
+
+    # mask padded residues
+    m = node_mask.to(dtype=dtype).unsqueeze(-1)      # [B,N,1]
+    A = A.to(dtype=dtype) * m                        # [B,N,K]
+    # occ = A.sum(dim=1).clamp_min(eps)                # [B,K]
+
+    # ---- occupancy ----
+    occ_raw = A.sum(dim=1)  # [B,K]  (不 clamp)
+    occ = occ_raw.clamp_min(eps)  # [B,K]  (仅用于除法安全)
+
+    # ---- build hard mask_parent ----
+    # 每个样本的有效残基数
+    n_valid = node_mask.to(dtype=dtype).sum(dim=1, keepdim=True).clamp_min(1.0)  # [B,1]
+    # “均匀分配”下每个 parent 的期望长度
+    occ_expect = (n_valid / max(K, 1))               # [B,1]
+
+    # 阈值：abs + rel * expect
+    thr = (occ_thresh_abs + occ_thresh_rel * occ_expect)  # [B,1]
+    mask_parent = (occ_raw > thr).to(dtype=dtype)         # [B,K] 0/1
+
+    # 可选：保证至少有 1 个 parent 激活（极端情况防炸）
+    # 如果全 0，就强行把最大 occ 的那个置 1
+    all_zero = (mask_parent.sum(dim=-1, keepdim=True) < 0.5)  # [B,1] bool
+    if all_zero.any():
+        k_best = occ_raw.argmax(dim=-1)  # [B]
+        mask_parent = mask_parent.clone()
+        mask_parent[torch.arange(B, device=device), k_best] = 1.0
+
+    # mean
+    mu = torch.einsum("bnk,bnd->bkd", A, x) / occ.unsqueeze(-1)  # [B,K,3]
+
+    # covariance (raw, no jitter here)
+    xc = x.unsqueeze(2) - mu.unsqueeze(1)            # [B,N,K,3]
+    cov = torch.einsum("bnk,bnkd,bnke->bkde", A, xc, xc) / occ.unsqueeze(-1).unsqueeze(-1)
+    cov = 0.5 * (cov + cov.transpose(-1, -2))        # 强制对称（jitter 交给下游）
+
+    # 从 cov 得到 R 和 scale（不调用 eigh）
+    # 注意：你传的 eps=1e-8 对闭式/归一化来说略大但没问题；这里做个下限，避免 eps 太大影响精度
+    eps_work = max(float(eps), 1e-12)
+    R, scale, eigvals = cov_to_R_scale_no_eigh_robust(
+        cov, jitter=jitter, eps=eps_work
+    )  # R:[B,K,3,3], scale:[B,K,3], eigvals:[B,K,3]
+
+    # 再做一次 mask（避免未使用列被 jitter 撑起来）
+    scale = scale * mask_parent[:, :, None]
+    # 对 unused 列，给一个安全的最小 scale（否则 log(0)）
+    scale = scale + (1.0 - mask_parent[:, :, None]) * 1e-3
+
+    # ---- soft usedness（0~1） ----
+    occ_max = occ_raw.max(dim=-1, keepdim=True).values.clamp_min(eps)
+    mask_soft = (occ_raw / occ_max) * mask_parent  # [B,K] 仅在 hard mask 内才有 soft 值
+
+    r_parent = OffsetGaussianRigid(
+        rots=Rotation(rot_mats=R),
+        trans=mu,
+        scaling_log=torch.log(scale.clamp_min(1e-6)),
+        local_mean=torch.zeros_like(mu),
+    )
+
+    return r_parent, occ,mask_parent, mask_soft
+
+
 def build_parents_from_segments_v3_debug(
         x_ca: torch.Tensor,
         node_mask: torch.Tensor,
@@ -1512,7 +1601,69 @@ class SegmentBreakHead(nn.Module):
         return logits
 
 
+def soft_pos01_from_A(
+    A: torch.Tensor,          # [B,N,K] row-stochastic (masked already ok)
+    node_mask: torch.Tensor,  # [B,N] 0/1
+    eps: float = 1e-8,
+):
+    """
+    returns:
+      pos01: [B,N] in [0,1]  (soft segment-relative position)
+      Lk:    [B,K]          (soft lengths)
+    """
+    dtype = A.dtype
+    m = node_mask.to(dtype=dtype).unsqueeze(-1)            # [B,N,1]
+    A = A * m                                              # [B,N,K]
 
+    # soft length per segment
+    Lk = A.sum(dim=1)                                      # [B,K]
+
+    # cum along sequence (inclusive)
+    cum = torch.cumsum(A, dim=1)                           # [B,N,K]
+    rank = cum - A                                         # [B,N,K]  ~ sum_{t<i} A[t,k]
+
+    denom = (Lk - 1.0).clamp_min(eps).unsqueeze(1)         # [B,1,K]
+    pos_k = rank / denom                                   # [B,N,K] in [0,1] approximately
+
+    # expected pos under A(i,k)
+    pos01 = (A * pos_k).sum(dim=-1)                        # [B,N]
+    pos01 = pos01 * node_mask.to(dtype=dtype)
+    return pos01, Lk
+
+def soft_pool_s(
+    s: torch.Tensor,          # [B,N,C]
+    node_mask: torch.Tensor,  # [B,N]
+    A: torch.Tensor,          # [B,N,K]
+    eps: float = 1e-8,
+):
+    dtype = s.dtype
+    m = node_mask.to(dtype=dtype).unsqueeze(-1)
+    A = A.to(dtype=dtype) * m                               # [B,N,K]
+    occ = A.sum(dim=1)                                      # [B,K]
+    denom = occ.clamp_min(eps).unsqueeze(-1)                # [B,K,1]
+    s_parent = torch.einsum("bnk,bnc->bkc", A, s) / denom   # [B,K,C]
+    return s_parent, occ, A
+
+class SoftSegmentPoolingWithPosEnc(nn.Module):
+    """
+    输入 A_soft（可导）而不是 a_idx（离散）。
+    做：
+      pos01_soft(A_soft) -> pos_emb -> s_aug -> soft_pool
+    """
+    def __init__(self, c_s: int, n_freq: int = 16, pos_weight: float = 1.0):
+        super().__init__()
+        self.pos_weight = float(pos_weight)
+        self.pos_enc = Pos01FourierEncoder(c_s=c_s, n_freq=n_freq)
+
+    def forward(self, s: torch.Tensor, node_mask: torch.Tensor, A_soft: torch.Tensor, eps: float = 1e-8):
+        pos01, Lk = soft_pos01_from_A(A_soft, node_mask, eps=eps)        # [B,N], [B,K]
+        pos_emb = self.pos_enc(pos01.to(torch.float32), node_mask).to(s.dtype)
+        s_aug = s + self.pos_weight * pos_emb
+
+        s_parent, occ, A_used = soft_pool_s(s_aug, node_mask, A_soft, eps=eps)
+
+        aux = {"pos01": pos01, "Lk": Lk}
+        return s_parent, occ, A_used, aux
 
 
 # ============================================================
@@ -1647,6 +1798,376 @@ def a_idx_from_break_logits_greedy_budget(
 # =========================
 # quick test
 # =========================
+
+
+import torch
+import torch.nn.functional as F
+
+# ============================================================
+# 1) 从 break_logits 构造 p_break 和 A_soft （完全可导）
+# ============================================================
+
+def build_p_break(
+    break_logits: torch.Tensor,   # [B, N-1]
+    node_mask: torch.Tensor,      # [B, N]
+    chain_idx: torch.Tensor | None = None,  # [B,N] or None
+    temp: float = 1.0,
+):
+    """
+    returns:
+      p_break: [B, N-1] in [0,1]  (masked; chain boundary forced to 1)
+      edge_mask: [B, N-1] 0/1 (valid edges within valid residues)
+    """
+    B, N = node_mask.shape
+    device = node_mask.device
+    dtype = break_logits.dtype
+
+    m = node_mask.to(dtype=dtype)
+    edge_mask = (m[:, 1:] * m[:, :-1])  # [B,N-1] valid adjacent edges
+
+    # sigmoid prob
+    p = torch.sigmoid(break_logits / max(temp, 1e-6)) * edge_mask
+
+    # force chain breaks (hard)
+    if chain_idx is not None:
+        # chain boundary between i-1 and i => must break
+        chain_break = (chain_idx[:, 1:] != chain_idx[:, :-1]).to(dtype=dtype) * edge_mask
+        # set to 1 where chain_break==1
+        p = torch.where(chain_break > 0.5, torch.ones_like(p), p)
+
+    return p, edge_mask
+
+
+def build_A_soft_from_p_break(
+    p_break: torch.Tensor,    # [B, N-1]
+    node_mask: torch.Tensor,  # [B, N]
+    Kmax: int,
+    alpha: float = 16.0,
+    eps: float = 1e-8,
+):
+    """
+    核心：s_i = sum_{t<i} p_break[t]  (monotonic increasing)
+          A_{i,k} ∝ exp(-alpha*(s_i - k)^2)
+
+    returns:
+      A_soft: [B, N, Kmax]   rows sum to 1 on valid residues
+      s_id:   [B, N]         soft segment coordinate
+    """
+    B, N = node_mask.shape
+    device = node_mask.device
+    dtype = p_break.dtype
+
+    m = node_mask.to(dtype=dtype)
+
+    # s_id: [B,N], s_id[:,0]=0, s_id[:,i]=sum_{t< i} p_break[t]
+    s_id = torch.zeros((B, N), device=device, dtype=dtype)
+    if N > 1:
+        s_id[:, 1:] = torch.cumsum(p_break, dim=1)  # [B,N-1] -> placed into [B,1:]
+
+    # centers k = 0..Kmax-1
+    k = torch.arange(Kmax, device=device, dtype=dtype).view(1, 1, Kmax)  # [1,1,K]    s = s_id.unsqueeze(-1)  # [B,N,1]
+    s = s_id.unsqueeze(-1)  # [B,N,1]
+    logits = -alpha * (s - k) ** 2  # [B,N,K]
+    logits = logits.masked_fill((m < 0.5).unsqueeze(-1), -1e9)
+
+    A = torch.softmax(logits, dim=-1) * m.unsqueeze(-1)  # [B,N,K]
+    return A, s_id
+
+
+# ============================================================
+# 2) 用 A_soft 做 pooling（替代硬 one-hot）
+# ============================================================
+
+def segment_soft_pool_s(
+    s: torch.Tensor,              # [B,N,C]
+    A_soft: torch.Tensor,         # [B,N,K]
+    node_mask: torch.Tensor,      # [B,N]
+    eps: float = 1e-8,
+):
+    """
+    returns:
+      s_parent: [B,K,C]
+      occ:      [B,K] soft lengths / occupancy
+    """
+    dtype = s.dtype
+    m = node_mask.to(dtype=dtype)
+
+    A = A_soft.to(dtype=dtype)
+    occ = A.sum(dim=1)  # [B,K]
+    denom = occ.clamp_min(eps).unsqueeze(-1)
+    s_parent = torch.einsum("bnk,bnc->bkc", A, s) / denom
+    return s_parent, occ
+
+
+# ============================================================
+# 3) 你要的正则：lambda_K * E[K] + min/max_len hinge
+#    +（可选）A 连续性平滑
+# ============================================================
+
+def segmentation_regularizers(
+    A_soft: torch.Tensor,         # [B,N,K]
+    p_break: torch.Tensor,        # [B,N-1]
+    edge_mask: torch.Tensor,      # [B,N-1]
+    Kmax_limit,
+    s_id,
+    min_len: float = 2.0,
+    max_len: float = 4.0,
+    lambda_K: float = 0.0,       # 段数惩罚（越大越少切）
+    w_minlen: float = 0.1,       # 短段惩罚（避免全是2）
+    w_maxlen: float = 0.1,       # 长段惩罚（避免一段吞太长）
+    w_smoothA: float = 0.1,       # 可选：增强连续性
+compression_ratio: float = 2.0,
+    eps: float = 1e-8,
+):
+    """
+    returns dict with:
+      E_K, loss_K, loss_minlen, loss_maxlen, loss_smoothA, total
+    """
+    B, N, K = A_soft.shape
+    dtype = A_soft.dtype
+
+    # ---- E[K] ≈ 1 + sum p_break over valid edges
+    E_K = 1.0 + (p_break * edge_mask).sum(dim=1)  # [B]
+    loss_K = (lambda_K * E_K).mean()
+
+    # ---- soft segment length L_k = sum_i A_{i,k}
+    Lk = A_soft.sum(dim=1)  # [B,K]
+
+    # 只对“非空段”施加 min/max（否则空段会被 min_len 罚爆）
+    # active_mask: Lk > tiny
+    active = (Lk > 0.5).to(dtype=dtype)  # 0/1
+
+    # min_len hinge:  (min_len - Lk)+
+    h_min = F.relu(min_len - Lk)
+    loss_minlen = (w_minlen * (h_min ** 2) * active).sum() / (active.sum().clamp_min(1.0))
+
+    # max_len hinge:  (Lk - max_len)+
+    h_max = F.relu(Lk - max_len)
+    loss_maxlen = (w_maxlen * (h_max ** 2) * active).sum() / (active.sum().clamp_min(1.0))
+
+
+
+    # ---- 可选：A 的邻接平滑（只有当不 break 的地方才强制相近）
+    # sum_i ||A_i - A_{i+1}||_1 * (1 - p_break[i])
+    loss_smoothA = torch.zeros((), device=A_soft.device, dtype=dtype)
+    if w_smoothA > 0.0 and N > 1:
+        w = (1.0 - p_break).clamp(0.0, 1.0) * edge_mask  # [B,N-1]
+        diff = (A_soft[:, 1:, :] - A_soft[:, :-1, :]).abs().sum(dim=-1)  # [B,N-1]
+        denom = w.sum().clamp_min(eps)
+        loss_smoothA = w_smoothA * (diff * w).sum() / denom
+
+    # 1. 计算总切分段数 (最后一个点的累积路径)
+    # s_id: [B, N]
+    total_segments = s_id[:, -1]  # [B]
+
+    # 2. 【核心】溢出惩罚 (Overflow Barrier)
+    # 如果 total_segments > Kmax_limit，产生巨大的梯度
+    # 给一点余量 (buffer)，比如 limit - 2
+    limit = float(Kmax_limit) - 2.0
+
+    # ReLU(total - limit) 表示：只要没超标，Loss=0；一旦超标，Loss 随距离线性/平方增长
+    overflow = F.relu(total_segments - limit)
+
+    # 权重给大一点，因为这是硬约束
+    loss_overflow = (overflow ** 2).mean() * 1.0
+
+    # 2.
+    # 设定你的“红线” (Budget)
+    # 比如 N=200, ratio=10 => target=20
+    # 你希望 K <= 20
+    target_budget = float(N) / compression_ratio
+
+    # 3. 计算超支 (Over Budget)
+    # 只有当 current_K > target_budget 时才有值
+    over_budget = F.relu(E_K - target_budget)
+
+    # 4. 暴力惩罚 (Quadratic Penalty)
+    # 用平方！如果超了 1 个 K，罚 1；超了 5 个 K，罚 25。
+    # 这会逼疯模型，让它必须砍掉多余的 K。
+    loss_budget = (over_budget ** 2).mean() * 1
+
+
+
+
+    total = loss_K + loss_minlen + loss_maxlen + loss_smoothA+loss_overflow+loss_budget
+
+    return {
+        "E_K": E_K.mean(),
+        "loss_K": loss_K,
+        "loss_minlen": loss_minlen,
+        "loss_maxlen": loss_maxlen,
+        "loss_smoothA": loss_smoothA,
+        "loss_overflow":loss_overflow,
+        "loss_budget": loss_budget,
+
+        "total": total,
+        "Lk_mean": Lk.mean(),
+        "Lk_min": (Lk + (1.0 - active) * 1e9).min(),  # min over active-ish
+        "Lk_max": Lk.max(),
+    }
+
+
+# ============================================================
+# 4) 一站式：break_logits -> A_soft + reg losses
+# ============================================================
+
+def build_soft_segments_and_loss(
+    break_logits: torch.Tensor,   # [B,N-1]
+    node_mask: torch.Tensor,      # [B,N]
+    chain_idx: torch.Tensor | None,
+    Kmax: int,
+    min_len: float,
+    max_len: float,
+    temp: float = 1.0,
+    alpha: float = 16.0,
+    lambda_K: float = 0.01,
+    w_minlen: float = 0.1,
+    w_maxlen: float = 0.1,
+    w_smoothA: float = 0.01,
+):
+    p_break, edge_mask = build_p_break(
+        break_logits=break_logits, node_mask=node_mask, chain_idx=chain_idx, temp=temp
+    )
+    # A_soft, s_id = build_A_soft_from_p_break(
+    #     p_break=p_break, node_mask=node_mask, Kmax=Kmax, alpha=alpha
+    # )
+
+    A_soft, s_id =build_A_soft_dynamic(
+        p_break=p_break, node_mask=node_mask, Kmax_limit=Kmax, alpha=alpha
+    )
+
+    regs = segmentation_regularizers(
+        A_soft=A_soft, p_break=p_break, edge_mask=edge_mask,Kmax_limit=Kmax,s_id=s_id,
+        min_len=min_len, max_len=max_len,
+        lambda_K=lambda_K, w_minlen=w_minlen, w_maxlen=w_maxlen, w_smoothA=w_smoothA
+    )
+    aux = {"p_break": p_break, "edge_mask": edge_mask, "s_id": s_id}
+    return A_soft, regs, aux
+
+
+def calculate_uniformity_metrics(seg_lens, mask_parent):
+    """
+    输入:
+        seg_lens: [B, Kmax] 每个片段的长度
+        mask_parent: [B, Kmax] 0/1 mask，表示该片段是否真实存在
+    输出:
+        metrics: 包含 cv, min_max_ratio 等指标的字典
+    """
+    # 1. 转换为 float 以进行统计计算
+    lens = seg_lens.float()
+
+    # 2. 计算每个样本的真实片段数量 K_real
+    K_real = mask_parent.sum(dim=1).clamp(min=1)  # [B]
+
+    # 3. 计算均值 (Mean)
+    # 注意：不能直接对 lens 求 mean，因为后面有 padding 的 0
+    # 公式: sum(lengths) / K_real
+    mean_len = (lens * mask_parent).sum(dim=1) / K_real  # [B]
+
+    # 4. 计算方差和标准差 (Std)
+    # 只计算 mask 为 1 的部分
+    # var = sum((x - mean)^2) / K
+    diff_sq = (lens - mean_len.unsqueeze(-1)) ** 2
+    # 这里的 mask_parent 很重要，要过滤掉 padding 部分产生的误差
+    variance = (diff_sq * mask_parent).sum(dim=1) / K_real
+    std_dev = torch.sqrt(variance)  # [B]
+
+    # --- 指标 1: 变异系数 (CV) ---
+    # CV = std / mean
+    cv = std_dev / mean_len.clamp(min=1e-6)
+
+    # --- 指标 2: Max/Min Ratio ---
+    # 为了计算 min，我们需要把 padding 的 0 变成无穷大，否则 min 永远是 0
+    lens_for_min = lens.clone()
+    lens_for_min[mask_parent == 0] = float('inf')
+
+    max_l = (lens * mask_parent).max(dim=1)[0]
+    min_l = lens_for_min.min(dim=1)[0]
+
+    # 避免 min 为 0 导致除零
+    ratio = max_l / min_l.clamp(min=1e-6)
+
+    return {
+        "mean_len": mean_len,  # 平均长度
+        "std_dev": std_dev,  # 标准差
+        "cv": cv,  # 变异系数 (越低越好)
+        "max_min_ratio": ratio  # 最长/最短比 (越接近1越好)
+    }
+
+
+
+
+def build_A_soft_dynamic(
+        p_break: torch.Tensor,  # [B, N-1]
+        node_mask: torch.Tensor,  # [B, N]
+        Kmax_limit: int,  # 这是一个"硬上限"，比如 128，防止模型疯了导致显存爆炸
+        alpha: float = 16.0,
+        radius_factor: float = 3.0,  # 依然建议加上这个截断，保证 0 就是 0
+):
+    B, N = node_mask.shape
+    device = node_mask.device
+    dtype = p_break.dtype
+
+    # 1. 计算 sid (累积路程)
+    # s_id: [B, N]
+    s_id = torch.zeros((B, N), device=device, dtype=dtype)
+    if N > 1:
+        s_id[:, 1:] = torch.cumsum(p_break, dim=1)
+
+    # =========================================================
+    # 核心修改：动态计算这一轮 Batch 实际需要的 K
+    # =========================================================
+    with torch.no_grad():
+        # 找出当前 batch 里走得最远的 sid 是多少
+        # 比如 max_s = 4.3，说明最大用到 K=5 (索引 0~4)
+        # 我们取整并 +1，作为当前的 K_curr
+        max_s = (s_id * node_mask).max()
+        K_needed = int(torch.ceil(max_s).item()) + 1
+
+        # 加上一点余量(buffer)，比如 +2，防止边界效应切断了最后一个高斯的尾巴
+        K_curr = K_needed + 2
+
+        # 但不能超过硬件允许的上限
+        K_curr = min(K_curr, Kmax_limit)
+
+        # 至少要保留 1 个 K
+        K_curr = max(K_curr, 1)
+
+    # =========================================================
+
+    # 2. 生成动态的 K 网格
+    # 注意：这里我们只生成到 K_curr，而不是 Kmax_limit
+    k = torch.arange(K_curr, device=device, dtype=dtype).view(1, 1, K_curr)  # [1, 1, K_curr]
+    s = s_id.unsqueeze(-1)  # [B, N, 1]
+
+    # 3. 计算距离 (只计算必要的 K)
+    # logits: [B, N, K_curr] <--- 维度变小了！
+    dist_sq = (s - k) ** 2
+
+    # --- 加上之前的 Hard Radius 截断 (建议保留，为了彻底的 0) ---
+    sigma = 1.0 / (alpha ** 0.5)
+    radius = sigma * radius_factor
+    cutoff_mask = (dist_sq > radius ** 2)
+
+    logits = -alpha * dist_sq
+
+    # Mask 处理
+    # 1. Padding 点设为 -inf
+    # 2. 距离太远的点设为 -inf
+    final_mask = (node_mask.unsqueeze(-1) < 0.5) | cutoff_mask
+    logits = logits.masked_fill(final_mask, -1e9)
+
+    # 4. Softmax
+    A = torch.softmax(logits, dim=-1)
+
+    # 再次清洗微小值
+    A = A * (~final_mask).to(dtype)
+
+    # 归一化
+    denom = A.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+    A = A / denom * node_mask.unsqueeze(-1)
+
+    return A, s_id
 if __name__ == "__main__":
     B, N, C = 2, 32, 64
     Kmax = 16

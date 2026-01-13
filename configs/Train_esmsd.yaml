@@ -94,11 +94,16 @@ experiment:
     w_nll: 0.0003              # NLL loss (已根据测试报告调整)
     # w_seq 使用上面的 type_loss_weight (0.01)
   wandb:
-    name: ${data.dataset}__HGF_AEV1_intra_0sup_scale_adaseg
+    name: ${data.dataset}__HGF_AEV1_intra_0sup_scale_adaseg_EK_break_logits__Asoftlambda_K_0.01_compression_ratio4_atten
     project: se3-fm_sh
 #    id: tyzsnzu2  # Resume existing run
 #    resume: must  # Allow resuming if run exists
     notes: >
+      lambda_K: float = 0.01,
+      w_minlen: float = 0.1,
+      w_maxlen: float = 0.1,
+      N/2 LK1
+      a_idx_from_break_logits_greedy_budget(break_logits, not p_break again
       Kmax=int((N/6))
       xi_gt_max
       scale = 1.5

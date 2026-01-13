@@ -479,7 +479,7 @@ class FlowModule(LightningModule):
         noisy_batch = self.interpolant.fbb_corrupt_batch(batch,prob)
 
         # Model forward
-        outs,downmetric = self.model(noisy_batch,step=self.global_step,total_steps=100000)
+        outs,reg_down,downmetric = self.model(noisy_batch,step=self.global_step,total_steps=100000)
 
 
 
@@ -488,47 +488,46 @@ class FlowModule(LightningModule):
         # ==========================================================
         # 设置记录频率，例如每 100 step 记录一次
         # 必须确保只在 rank 0 记录 (如果不使用 DDP，self.global_rank 默认为 0)
-        log_img_every = 1000
+        log_img_every = 500
+
+        # 1. 获取 Batch 中第一个样本的数据
+        # r_res: OffsetGaussianRigid
+        pred_ca = outs["x_hat"][0]
+
+        # # 获取 Pred CA (Translation)
+        # if hasattr(r_pred, "get_trans"):
+        #     pred_ca = r_pred.get_trans()[0]  # [N, 3]
+        # else:
+        #     pred_ca = r_pred.trans[0]
+
+        # 获取 GT CA (必须是去中心化后的 noisy_batch['trans_1'])
+        gt_ca = noisy_batch['trans_1'][0]  # [N, 3]
+
+        # 获取 Mask
+        # 注意：如果使用了 update_mask，最好只看 update 的部分，或者看全部 res_mask
+        # 这里使用 res_mask 看整体结构
+        mask = noisy_batch['res_mask'][0]  # [N]
+        # [Debug Start]
+        pred_mean = pred_ca.mean(dim=(0, 1))
+        gt_mean = gt_ca.mean(dim=(0, 1))
+        pred_abs_mean = pred_ca.abs().mean()
+        gt_abs_mean = gt_ca.abs().mean()
+
+        # print(f"\n[DEBUG CHECK]")
+        # print(f"GT Center: {gt_mean.tolist()} (Should be near 0)")
+        # print(f"Pred Center: {pred_mean.tolist()} (Should be near 0)")
+        # print(f"GT Scale (Abs Mean): {gt_abs_mean.item():.2f} (Typical: 15-30)")
+        # print(f"Pred Scale (Abs Mean): {pred_abs_mean.item():.2f}")
 
         if (self.global_step % log_img_every == 0) and (self.global_rank == 0) and isinstance(self.logger, WandbLogger):
             try:
 
 
-
-
-
-                # 1. 获取 Batch 中第一个样本的数据
-                # r_res: OffsetGaussianRigid
-                pred_ca = outs["x_hat"][0]
-
-                # # 获取 Pred CA (Translation)
-                # if hasattr(r_pred, "get_trans"):
-                #     pred_ca = r_pred.get_trans()[0]  # [N, 3]
-                # else:
-                #     pred_ca = r_pred.trans[0]
-
-                # 获取 GT CA (必须是去中心化后的 noisy_batch['trans_1'])
-                gt_ca = noisy_batch['trans_1'][0]  # [N, 3]
-
-                # 获取 Mask
-                # 注意：如果使用了 update_mask，最好只看 update 的部分，或者看全部 res_mask
-                # 这里使用 res_mask 看整体结构
-                mask = noisy_batch['res_mask'][0]  # [N]
-
                 # 2. 调用绘图
                 self.log_ca_distance_map_wandb(pred_ca, gt_ca, mask, self.global_step)
+                self.logger.experiment.log({"train/Asoft_down_map": wandb.Image(outs["fig_dwon"])}, step=self.global_step)
 
-                # [Debug Start]
-                pred_mean = pred_ca.mean(dim=(0, 1))
-                gt_mean = gt_ca.mean(dim=(0, 1))
-                pred_abs_mean = pred_ca.abs().mean()
-                gt_abs_mean = gt_ca.abs().mean()
 
-                print(f"\n[DEBUG CHECK]")
-                print(f"GT Center: {gt_mean.tolist()} (Should be near 0)")
-                print(f"Pred Center: {pred_mean.tolist()} (Should be near 0)")
-                print(f"GT Scale (Abs Mean): {gt_abs_mean.item():.2f} (Typical: 15-30)")
-                print(f"Pred Scale (Abs Mean): {pred_abs_mean.item():.2f}")
 
             except Exception as e:
                 print(f"[Warning] Failed to log distance map: {e}")
@@ -569,7 +568,9 @@ class FlowModule(LightningModule):
 
         # Calculate loss using IGA Loss
         metrics = seg_ae_losses(x_gt=noisy_batch['trans_1'],node_mask=noisy_batch['res_mask'],**outs)
-        metrics = metrics |ca_metric|downmetric
+        metrics = metrics |ca_metric|downmetric|reg_down
+
+        metrics['loss']=metrics['loss']+reg_down["total"]
 
         if return_outputs:
             # 返回 metrics 和 outputs（用于 validation 保存结构）

@@ -73,35 +73,7 @@ def break_supervision_loss(
     denom = break_mask.sum().clamp_min(eps)
     return (loss * break_mask).sum() / denom
 
-@torch.no_grad()
-def breaks_from_a_idx(
-    a_idx: torch.Tensor,            # [B,N] long
-    node_mask: torch.Tensor,        # [B,N] 0/1
-    chain_idx: torch.Tensor | None = None,  # [B,N] long
-):
-    """
-    returns:
-      break_gt:   [B,N-1] float 0/1
-      break_mask: [B,N-1] float 0/1  (只在 i,i+1 都有效的位置计算 loss)
-    """
-    B, N = a_idx.shape
-    device = a_idx.device
-    dtype = torch.float32
 
-    m = node_mask.to(dtype=dtype)
-    # 有效的相邻对：i 和 i+1 都是 valid residue
-    pair_valid = m[:, :-1] * m[:, 1:]  # [B,N-1]
-
-    # 段切分：a_idx 变化处必切
-    break_gt = (a_idx[:, 1:] != a_idx[:, :-1]).to(dtype=dtype)
-
-    # 多链：链断点强制切
-    if chain_idx is not None:
-        chain_break = (chain_idx[:, 1:] != chain_idx[:, :-1]).to(dtype=dtype)
-        break_gt = torch.clamp(break_gt + chain_break, 0.0, 1.0)
-
-    break_gt = break_gt * pair_valid
-    return break_gt, pair_valid
 def segmenter_aux_losses(
     break_logits: torch.Tensor,        # [B,N-1]
     a_idx_teacher: torch.Tensor,       # [B,N]
@@ -286,7 +258,7 @@ def seg_ae_losses(
     r_parent,
     w_x: float = 1.0,
     w_xi: float = 0.0,
-    w_pair_intra: float = 0.1,
+    w_pair_intra: float = 1.0,
     clamp_pair: float | None = 50.0,  # Å 上常用 clamp，防长距离主导
     eps: float = 1e-8,
         **kwargs
