@@ -1,0 +1,185 @@
+defaults:
+  - _self_
+  - datasets
+  - SH
+
+
+data:
+
+  # Available tasks: hallucination, inpainting
+  task: hallucination
+
+  # Available tasks: pdb, scope
+  dataset: pdb
+#  val_dataset_override: val
+
+  loader:
+    num_workers: 12
+    prefetch_factor: 2
+
+  sampler:
+    # Setting for 48GB GPUs
+    max_batch_size: 6
+    max_num_res_squared: 20_000
+
+flow_matcher:
+  flow_trans: True
+  flow_rot: True
+  ot_fn: exact
+  reg: 0.05 # only used if ot_fn is 'sinkhorn'.
+  ot_plan: False # Using OT plan to pair the noise with data. Default False.
+  stochastic_paths: False # Switches to stochastic
+
+  # R(3) Flow Matcher arguments
+  r3:
+    min_b: 0.01
+    min_sigma: 0.01
+    max_b: 20.0
+    coordinate_scaling: 0.1
+    g: 0.1
+
+  # SO(3) Flow Matcher arguments
+  so3:
+    min_sigma: 0.01
+    max_sigma: 1.5
+    axis_angle: True
+    inference_scaling: -0.01
+    g: 0.1
+
+interpolant:
+  min_t: 1e-4
+  coord_scale: 1
+  twisting:
+    use: False
+
+  rots:
+    corrupt: True
+    sample_schedule: exp
+    exp_rate: 10
+
+  trans:
+    corrupt: True
+    batch_ot: True
+    sample_schedule: linear
+    sample_temp: 1.0
+    vpsde_bmin: 0.1
+    vpsde_bmax: 20.0
+    potential: null
+    potential_t_scaling: False
+    rog:
+      weight: 10.0
+      cutoff: 5.0
+
+  sampling:
+    num_timesteps: 10
+    do_sde: True
+
+  self_condition: ${model.edge_features.self_condition}
+
+experiment:
+  save_val_samples: True
+  task: hallucination
+  noise_scheme: Gaussianatoms
+  debug: True  # 关闭debug模式，启用多进程数据加载
+  seed: 123
+  num_devices: 1
+  warm_start:
+  warm_start_cfg_override: True
+  training:
+    log_sh_grad_norm: True
+    use_snr_weight: True
+    trans_loss_weight: 1.0
+    rot_loss_weight: 0.5
+    rot_loss_t_threshold: 0.0
+    separate_rot_loss: True
+    trans_x0_threshold: 0.0
+    bb_atom_scale: 1
+    bb_atom_loss_weight: 1
+    bb_atom_loss_t_filter: 0.25
+    dist_mat_loss_weight: 1.0
+    dist_mat_loss_t_filter: 0.25
+    aux_loss_weight: 0.25
+    chil_loss_weight: 10
+    type_loss_weight: 0.01  # 降低type权重(已经98.7%准确)
+    atom_loss_weight: 1.0  # 提高atom权重(RMSD还很大)
+    sh_tau_threshold: 0.0  # SH密度threshold (0=关闭, 0.2=过滤低密度)
+    SH_loss_weight: 0.01
+
+    # ========== Gaussian Parameters ==========
+    base_thickness: 0.5        # Base thickness for Gaussian scaling (Angstrom)
+
+    # ========== IGA Loss Weights (新增) ==========
+    # Legacy Coordinate Weights
+    pair_loss_weight: 1.0      # Pairwise distance loss
+    huber_loss_weight: 1.0     # Huber loss
+
+    # IGA-Specific Weights
+    w_param: 5.0               # Gaussian parameter (offset + scaling) MSE
+    w_nll: 0.0003              # NLL loss (已根据测试报告调整)
+    # w_seq 使用上面的 type_loss_weight (0.01)
+  wandb:
+    name: ${data.dataset}__HGF_AEV1_intra_0sup_scale_adaseg_EK_break_logits__Asoftlambda_K_0.01_compression_ratio4_atten
+    project: se3-fm_sh
+#    id: tyzsnzu2  # Resume existing run
+#    resume: must  # Allow resuming if run exists
+    notes: >
+      lambda_K: float = 0.01,
+      w_minlen: float = 0.1,
+      w_maxlen: float = 0.1,
+      N/2 LK1
+      a_idx_from_break_logits_greedy_budget(break_logits, not p_break again
+      Kmax=int((N/6))
+      xi_gt_max
+      scale = 1.5
+      suploss weight 0.0
+      close lambda_route_smooth etc
+      down ca pairlossweight to 0.5
+      reg_total = reg_total + 0.5 * loss_balance + 0.1 * loss_entropy + 2.0 * loss_scale_hinge
+      cancel         if self.w_clip_min > 0:
+            w = w.clamp_min(self.w_clip_min)
+            w = w / w.sum(dim=-1, keepdim=True).clamp_min(1e-9)
+      
+      not use trunk force finalup learn
+      regweight 1.0 tau_init 0.1
+      upsapme v3
+      high w_pair_global
+      revised using noisy_batch
+      revised using forward_stage3_half_trunk
+      _safe_cholesky_3x3_manual
+      igaonly,stage2->bottleneck->4
+      igaonly,stage2->4
+      # just iga and final up , ca loss only
+      loss_sep = valid_overlap.sum() /(denom* (denom + 1e-6))
+      修正 偏心高斯更新方式
+      
+      To address the "hedgehog" artifacts and numerical instability, we revamped the Gaussian loss framework. The **SymmetricGaussianLoss** now incorporates a bidirectional Mahalanobis distance with a **Trace term**, enforcing strict parent-child alignment and eliminating orthogonal intersections. We balanced the loss scales using **log-barrier compression** to prevent the high-magnitude Child-View gradient from overwhelming the reconstruction MSE. For upsampling, we introduced **anisotropic repulsion** based on full covariance overlap and added a **learnable geometric bias** to the stochastic splitting process, effectively resolving mode collapse. Finally, the coarse-to-fine transition now utilizes **Gaussian Overlap KNN** to ensure topologically consistent parent selection.
+      
+
+
+  optimizer:
+    lr: 0.0001
+  trainer:
+    overfit_batches: 0
+    min_epochs: 1 # prevents early stopping
+    max_epochs: 1000
+    accelerator: gpu
+    devices: "auto"  # 强制使用单GPU，避免DDP
+    log_every_n_steps: 10
+    deterministic: False
+    strategy: auto
+    check_val_every_n_epoch: 2
+    accumulate_grad_batches: 2
+    num_sanity_val_steps: 0
+    # 正常训练模式 (改成0只跑验证)
+    limit_train_batches: 1.0
+    limit_val_batches: 1.0
+
+
+  checkpointer:
+    dirpath: ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    save_last: True
+    save_top_k: 2
+    monitor: valid/loss
+    mode: min
+  # Keep this null. Will be populated at runtime.
+  inference_dir: null

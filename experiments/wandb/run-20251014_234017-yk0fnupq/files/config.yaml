@@ -1,0 +1,635 @@
+wandb_version: 1
+
+_wandb:
+  desc: null
+  value:
+    python_version: 3.10.12
+    cli_version: 0.15.8
+    framework: lightning
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1760456417.340273
+    t:
+      1:
+      - 1
+      - 5
+      - 9
+      - 41
+      - 50
+      - 53
+      - 55
+      - 103
+      2:
+      - 1
+      - 5
+      - 9
+      - 41
+      - 50
+      - 53
+      - 55
+      - 103
+      3:
+      - 7
+      - 13
+      - 23
+      4: 3.10.12
+      5: 0.15.8
+      8:
+      - 8
+    m:
+    - 1: trainer/global_step
+      6:
+      - 3
+data:task:
+  desc: null
+  value: hallucination
+data:dataset:
+  desc: null
+  value: pdb
+data:loader:num_workers:
+  desc: null
+  value: 12
+data:loader:prefetch_factor:
+  desc: null
+  value: 2
+data:sampler:max_batch_size:
+  desc: null
+  value: 20
+data:sampler:max_num_res_squared:
+  desc: null
+  value: 160000
+interpolant:min_t:
+  desc: null
+  value: 0.0001
+interpolant:twisting:use:
+  desc: null
+  value: false
+interpolant:rots:corrupt:
+  desc: null
+  value: true
+interpolant:rots:sample_schedule:
+  desc: null
+  value: exp
+interpolant:rots:exp_rate:
+  desc: null
+  value: 10
+interpolant:trans:corrupt:
+  desc: null
+  value: true
+interpolant:trans:batch_ot:
+  desc: null
+  value: true
+interpolant:trans:sample_schedule:
+  desc: null
+  value: linear
+interpolant:trans:sample_temp:
+  desc: null
+  value: 1.0
+interpolant:trans:vpsde_bmin:
+  desc: null
+  value: 0.1
+interpolant:trans:vpsde_bmax:
+  desc: null
+  value: 20.0
+interpolant:trans:potential:
+  desc: null
+  value: null
+interpolant:trans:potential_t_scaling:
+  desc: null
+  value: false
+interpolant:trans:rog:weight:
+  desc: null
+  value: 10.0
+interpolant:trans:rog:cutoff:
+  desc: null
+  value: 5.0
+interpolant:sampling:num_timesteps:
+  desc: null
+  value: 10
+interpolant:sampling:do_sde:
+  desc: null
+  value: false
+interpolant:self_condition:
+  desc: null
+  value: true
+experiment:task:
+  desc: null
+  value: shfbb
+experiment:noise_scheme:
+  desc: null
+  value: side_atoms
+experiment:debug:
+  desc: null
+  value: false
+experiment:seed:
+  desc: null
+  value: 123
+experiment:num_devices:
+  desc: null
+  value: 1
+experiment:warm_start:
+  desc: null
+  value: null
+experiment:warm_start_cfg_override:
+  desc: null
+  value: true
+experiment:training:trans_loss_weight:
+  desc: null
+  value: 1.0
+experiment:training:rot_loss_weight:
+  desc: null
+  value: 0.5
+experiment:training:rot_loss_t_threshold:
+  desc: null
+  value: 0.0
+experiment:training:separate_rot_loss:
+  desc: null
+  value: true
+experiment:training:trans_x0_threshold:
+  desc: null
+  value: 0.0
+experiment:training:bb_atom_scale:
+  desc: null
+  value: 1
+experiment:training:bb_atom_loss_weight:
+  desc: null
+  value: 1
+experiment:training:bb_atom_loss_t_filter:
+  desc: null
+  value: 0.25
+experiment:training:dist_mat_loss_weight:
+  desc: null
+  value: 1.0
+experiment:training:dist_mat_loss_t_filter:
+  desc: null
+  value: 0.25
+experiment:training:aux_loss_weight:
+  desc: null
+  value: 0.25
+experiment:training:chil_loss_weight:
+  desc: null
+  value: 10
+experiment:training:type_loss_weight:
+  desc: null
+  value: 1
+experiment:training:atom_loss_weight:
+  desc: null
+  value: 0.2
+experiment:training:SH_loss_weight:
+  desc: null
+  value: 10
+experiment:wandb:name:
+  desc: null
+  value: pdb__ENcoder11atoms_chroma_features_maskall_SNR_testnewppl_noiseinsacle8_notleak
+experiment:wandb:project:
+  desc: null
+  value: se3-fm_sh
+experiment:wandb:notes:
+  desc: null
+  value: ''
+experiment:optimizer:lr:
+  desc: null
+  value: 0.0001
+experiment:trainer:overfit_batches:
+  desc: null
+  value: 0
+experiment:trainer:min_epochs:
+  desc: null
+  value: 1
+experiment:trainer:max_epochs:
+  desc: null
+  value: 1000
+experiment:trainer:accelerator:
+  desc: null
+  value: gpu
+experiment:trainer:log_every_n_steps:
+  desc: null
+  value: 1
+experiment:trainer:deterministic:
+  desc: null
+  value: false
+experiment:trainer:strategy:
+  desc: null
+  value: auto
+experiment:trainer:check_val_every_n_epoch:
+  desc: null
+  value: 2
+experiment:trainer:accumulate_grad_batches:
+  desc: null
+  value: 2
+experiment:trainer:num_sanity_val_steps:
+  desc: null
+  value: 0
+experiment:checkpointer:dirpath:
+  desc: null
+  value: ckpt/se3-fm_sh/pdb__ENcoder11atoms_chroma_features_maskall_SNR_testnewppl_noiseinsacle8_notleak/2025-10-14_23-40-07
+experiment:checkpointer:save_last:
+  desc: null
+  value: true
+experiment:checkpointer:save_top_k:
+  desc: null
+  value: 2
+experiment:checkpointer:monitor:
+  desc: null
+  value: valid/loss
+experiment:checkpointer:mode:
+  desc: null
+  value: min
+experiment:inference_dir:
+  desc: null
+  value: null
+shared:seed:
+  desc: null
+  value: 123
+shared:max_cache_size:
+  desc: null
+  value: 100000
+shared:samples_per_eval_length:
+  desc: null
+  value: 5
+shared:num_eval_lengths:
+  desc: null
+  value: 8
+shared:max_eval_length:
+  desc: null
+  value: 1000
+shared:min_motif_percent:
+  desc: null
+  value: 0.0
+shared:max_motif_percent:
+  desc: null
+  value: 0.0
+val_dataset:seed:
+  desc: null
+  value: 123
+val_dataset:csv_path:
+  desc: null
+  value: /home/junyu/project/casp15/targets/preprocessed/metadata.csv
+val_dataset:max_cache_size:
+  desc: null
+  value: 100000
+val_dataset:do_not_filter:
+  desc: null
+  value: true
+val_dataset:cache_num_res:
+  desc: null
+  value: 0
+val_dataset:add_plddt_mask:
+  desc: null
+  value: false
+val_dataset:max_eval_length:
+  desc: null
+  value: 1000
+val_dataset:inpainting_percent:
+  desc: null
+  value: 1.0
+val_dataset:samples_per_eval_length:
+  desc: null
+  value: 1
+val_dataset:num_eval_lengths:
+  desc: null
+  value: 1
+val_dataset:filter:max_num_res:
+  desc: null
+  value: 1000
+val_dataset:filter:min_num_res:
+  desc: null
+  value: 30
+scope_dataset:seed:
+  desc: null
+  value: 123
+scope_dataset:csv_path:
+  desc: null
+  value: /home/junyu/project/protein-frame-flow-u/data/preprocessed/metadata.csv
+scope_dataset:max_cache_size:
+  desc: null
+  value: 100000
+scope_dataset:cache_num_res:
+  desc: null
+  value: 0
+scope_dataset:add_plddt_mask:
+  desc: null
+  value: false
+scope_dataset:max_eval_length:
+  desc: null
+  value: 1000
+scope_dataset:inpainting_percent:
+  desc: null
+  value: 1.0
+scope_dataset:samples_per_eval_length:
+  desc: null
+  value: 5
+scope_dataset:num_eval_lengths:
+  desc: null
+  value: 8
+scope_dataset:filter:max_num_res:
+  desc: null
+  value: 512
+scope_dataset:filter:min_num_res:
+  desc: null
+  value: 60
+scope_dataset:min_motif_percent:
+  desc: null
+  value: 0.0
+scope_dataset:max_motif_percent:
+  desc: null
+  value: 0.0
+pdb_dataset:seed:
+  desc: null
+  value: 123
+pdb_dataset:csv_path:
+  desc: null
+  value: /root/autodl-tmp/pu/metadata/pdb_metadata_with_dates.csv
+pdb_dataset:cluster_path:
+  desc: null
+  value: /root/autodl-tmp/pu/metadata/pdb.clusters
+pdb_dataset:max_cache_size:
+  desc: null
+  value: 100000
+pdb_dataset:cache_num_res:
+  desc: null
+  value: 1000
+pdb_dataset:inpainting_percent:
+  desc: null
+  value: 1.0
+pdb_dataset:add_plddt_mask:
+  desc: null
+  value: false
+pdb_dataset:max_eval_length:
+  desc: null
+  value: 1000
+pdb_dataset:samples_per_eval_length:
+  desc: null
+  value: 5
+pdb_dataset:num_eval_lengths:
+  desc: null
+  value: 8
+pdb_dataset:filter:max_num_res:
+  desc: null
+  value: 400
+pdb_dataset:filter:min_num_res:
+  desc: null
+  value: 60
+pdb_dataset:filter:max_coil_percent:
+  desc: null
+  value: 0.5
+pdb_dataset:filter:rog_quantile:
+  desc: null
+  value: 0.96
+pdb_dataset:filter:oligomeric:
+  desc: null
+  value:
+  - monomeric
+pdb_dataset:filter:num_chains:
+  desc: null
+  value:
+  - 1
+pdb_dataset:min_motif_percent:
+  desc: null
+  value: 0.0
+pdb_dataset:max_motif_percent:
+  desc: null
+  value: 0.0
+model:node_embed_size:
+  desc: null
+  value: 256
+model:edge_embed_size:
+  desc: null
+  value: 128
+model:symmetric:
+  desc: null
+  value: false
+model:node_features:c_s:
+  desc: null
+  value: 256
+model:node_features:c_pos_emb:
+  desc: null
+  value: 128
+model:node_features:c_timestep_emb:
+  desc: null
+  value: 128
+model:node_features:max_num_res:
+  desc: null
+  value: 2000
+model:node_features:timestep_int:
+  desc: null
+  value: 1000
+model:node_features:embed_chain:
+  desc: null
+  value: false
+model:edge_features:single_bias_transition_n:
+  desc: null
+  value: 2
+model:edge_features:c_s:
+  desc: null
+  value: 256
+model:edge_features:c_p:
+  desc: null
+  value: 128
+model:edge_features:relpos_k:
+  desc: null
+  value: 64
+model:edge_features:feat_dim:
+  desc: null
+  value: 64
+model:edge_features:num_bins:
+  desc: null
+  value: 22
+model:edge_features:self_condition:
+  desc: null
+  value: true
+model:edge_features:embed_chain:
+  desc: null
+  value: false
+model:edge_features:embed_diffuse_mask:
+  desc: null
+  value: true
+model:ipa:c_s:
+  desc: null
+  value: 256
+model:ipa:c_z:
+  desc: null
+  value: 128
+model:ipa:c_hidden:
+  desc: null
+  value: 16
+model:ipa:no_heads:
+  desc: null
+  value: 8
+model:ipa:no_qk_points:
+  desc: null
+  value: 8
+model:ipa:no_v_points:
+  desc: null
+  value: 12
+model:ipa:seq_tfmr_num_heads:
+  desc: null
+  value: 4
+model:ipa:seq_tfmr_num_layers:
+  desc: null
+  value: 2
+model:ipa:num_blocks:
+  desc: null
+  value: 6
+model:Hourglass:dim:
+  desc: null
+  value: 256
+model:Hourglass:depth:
+  desc: null
+  value:
+  - 2
+  - 2
+model:Hourglass:shorten_factor:
+  desc: null
+  value:
+  - 1
+  - 1
+model:Hourglass:downproj_factor:
+  desc: null
+  value:
+  - 1
+  - 1
+model:Hourglass:attn_resampling:
+  desc: null
+  value: true
+model:Hourglass:updown_sample_type:
+  desc: null
+  value: linear
+model:Hourglass:heads:
+  desc: null
+  value: 8
+model:Hourglass:dim_head:
+  desc: null
+  value: 64
+model:Hourglass:causal:
+  desc: null
+  value: false
+model:Hourglass:norm_out:
+  desc: null
+  value: false
+model:Hourglass:n_e:
+  desc: null
+  value: 512
+model:Hourglass:e_dim:
+  desc: null
+  value: 64
+model:sh:hidden_scalar:
+  desc: null
+  value: 256
+model:sh:C:
+  desc: null
+  value: 4
+model:sh:L_max:
+  desc: null
+  value: 8
+model:sh:R_bins:
+  desc: null
+  value: 24
+model:sh:L_edge:
+  desc: null
+  value: 2
+model:sh:n_layers:
+  desc: null
+  value: 12
+model:sh:n_radial:
+  desc: null
+  value: 8
+model:sh:dropout:
+  desc: null
+  value: 0.1
+model:sh:k_neighbors:
+  desc: null
+  value: 24
+model:sh:num_classes:
+  desc: null
+  value: 20
+model:sh:r_max:
+  desc: null
+  value: 8
+model:sh:voxel_size:
+  desc: null
+  value: 0.25
+model:sh:min_peak_distance:
+  desc: null
+  value: 0.8
+model:sh:topk_per_channel:
+  desc: null
+  value:
+  - 10
+  - 4
+  - 3
+  - 1
+model:FA:d_model:
+  desc: null
+  value: 256
+model:FA:n_heads:
+  desc: null
+  value: 24
+model:FA:num_layers:
+  desc: null
+  value: 12
+cfg:
+  desc: null
+  value: '{''data'': {''task'': ''hallucination'', ''dataset'': ''pdb'', ''loader'':
+    {''num_workers'': 12, ''prefetch_factor'': 2}, ''sampler'': {''max_batch_size'':
+    20, ''max_num_res_squared'': 160000}}, ''interpolant'': {''min_t'': 0.0001, ''twisting'':
+    {''use'': False}, ''rots'': {''corrupt'': True, ''sample_schedule'': ''exp'',
+    ''exp_rate'': 10}, ''trans'': {''corrupt'': True, ''batch_ot'': True, ''sample_schedule'':
+    ''linear'', ''sample_temp'': 1.0, ''vpsde_bmin'': 0.1, ''vpsde_bmax'': 20.0, ''potential'':
+    None, ''potential_t_scaling'': False, ''rog'': {''weight'': 10.0, ''cutoff'':
+    5.0}}, ''sampling'': {''num_timesteps'': 10, ''do_sde'': False}, ''self_condition'':
+    ''${model.edge_features.self_condition}''}, ''experiment'': {''task'': ''shfbb'',
+    ''noise_scheme'': ''side_atoms'', ''debug'': False, ''seed'': 123, ''num_devices'':
+    1, ''warm_start'': None, ''warm_start_cfg_override'': True, ''training'': {''trans_loss_weight'':
+    1.0, ''rot_loss_weight'': 0.5, ''rot_loss_t_threshold'': 0.0, ''separate_rot_loss'':
+    True, ''trans_x0_threshold'': 0.0, ''bb_atom_scale'': 1, ''bb_atom_loss_weight'':
+    1, ''bb_atom_loss_t_filter'': 0.25, ''dist_mat_loss_weight'': 1.0, ''dist_mat_loss_t_filter'':
+    0.25, ''aux_loss_weight'': 0.25, ''chil_loss_weight'': 10, ''type_loss_weight'':
+    1, ''atom_loss_weight'': 0.2, ''SH_loss_weight'': 10}, ''wandb'': {''name'': ''${data.dataset}__ENcoder11atoms_chroma_features_maskall_SNR_testnewppl_noiseinsacle8_notleak'',
+    ''project'': ''se3-fm_sh'', ''notes'': ''''}, ''optimizer'': {''lr'': 0.0001},
+    ''trainer'': {''overfit_batches'': 0, ''min_epochs'': 1, ''max_epochs'': 1000,
+    ''accelerator'': ''gpu'', ''log_every_n_steps'': 1, ''deterministic'': False,
+    ''strategy'': ''auto'', ''check_val_every_n_epoch'': 2, ''accumulate_grad_batches'':
+    2, ''num_sanity_val_steps'': 0}, ''checkpointer'': {''dirpath'': ''ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}'',
+    ''save_last'': True, ''save_top_k'': 2, ''monitor'': ''valid/loss'', ''mode'':
+    ''min''}, ''inference_dir'': None}, ''shared'': {''seed'': 123, ''max_cache_size'':
+    100000, ''samples_per_eval_length'': 5, ''num_eval_lengths'': 8, ''max_eval_length'':
+    1000, ''min_motif_percent'': 0.0, ''max_motif_percent'': 0.0}, ''val_dataset'':
+    {''seed'': ''${shared.seed}'', ''csv_path'': ''/home/junyu/project/casp15/targets/preprocessed/metadata.csv'',
+    ''max_cache_size'': ''${shared.max_cache_size}'', ''do_not_filter'': True, ''cache_num_res'':
+    0, ''add_plddt_mask'': False, ''max_eval_length'': ''${shared.max_eval_length}'',
+    ''inpainting_percent'': 1.0, ''samples_per_eval_length'': 1, ''num_eval_lengths'':
+    1, ''filter'': {''max_num_res'': 1000, ''min_num_res'': 30}}, ''scope_dataset'':
+    {''seed'': ''${shared.seed}'', ''csv_path'': ''/home/junyu/project/protein-frame-flow-u/data/preprocessed/metadata.csv'',
+    ''max_cache_size'': ''${shared.max_cache_size}'', ''cache_num_res'': 0, ''add_plddt_mask'':
+    False, ''max_eval_length'': ''${shared.max_eval_length}'', ''inpainting_percent'':
+    1.0, ''samples_per_eval_length'': ''${shared.samples_per_eval_length}'', ''num_eval_lengths'':
+    ''${shared.num_eval_lengths}'', ''filter'': {''max_num_res'': 512, ''min_num_res'':
+    60}, ''min_motif_percent'': ''${shared.min_motif_percent}'', ''max_motif_percent'':
+    ''${shared.max_motif_percent}''}, ''pdb_dataset'': {''seed'': ''${shared.seed}'',
+    ''csv_path'': ''/root/autodl-tmp/pu/metadata/pdb_metadata_with_dates.csv'', ''cluster_path'':
+    ''/root/autodl-tmp/pu/metadata/pdb.clusters'', ''max_cache_size'': ''${shared.max_cache_size}'',
+    ''cache_num_res'': 1000, ''inpainting_percent'': 1.0, ''add_plddt_mask'': False,
+    ''max_eval_length'': ''${shared.max_eval_length}'', ''samples_per_eval_length'':
+    ''${shared.samples_per_eval_length}'', ''num_eval_lengths'': ''${shared.num_eval_lengths}'',
+    ''filter'': {''max_num_res'': 400, ''min_num_res'': 60, ''max_coil_percent'':
+    0.5, ''rog_quantile'': 0.96, ''oligomeric'': [''monomeric''], ''num_chains'':
+    [1]}, ''min_motif_percent'': ''${shared.min_motif_percent}'', ''max_motif_percent'':
+    ''${shared.max_motif_percent}''}, ''model'': {''node_embed_size'': 256, ''edge_embed_size'':
+    128, ''symmetric'': False, ''node_features'': {''c_s'': ''${model.node_embed_size}'',
+    ''c_pos_emb'': 128, ''c_timestep_emb'': 128, ''max_num_res'': 2000, ''timestep_int'':
+    1000, ''embed_chain'': False}, ''edge_features'': {''single_bias_transition_n'':
+    2, ''c_s'': ''${model.node_embed_size}'', ''c_p'': ''${model.edge_embed_size}'',
+    ''relpos_k'': 64, ''feat_dim'': 64, ''num_bins'': 22, ''self_condition'': True,
+    ''embed_chain'': False, ''embed_diffuse_mask'': True}, ''ipa'': {''c_s'': ''${model.node_embed_size}'',
+    ''c_z'': ''${model.edge_embed_size}'', ''c_hidden'': 16, ''no_heads'': 8, ''no_qk_points'':
+    8, ''no_v_points'': 12, ''seq_tfmr_num_heads'': 4, ''seq_tfmr_num_layers'': 2,
+    ''num_blocks'': 6}, ''Hourglass'': {''dim'': ''${model.node_embed_size}'', ''depth'':
+    [2, 2], ''shorten_factor'': [1, 1], ''downproj_factor'': [1, 1], ''attn_resampling'':
+    True, ''updown_sample_type'': ''linear'', ''heads'': 8, ''dim_head'': 64, ''causal'':
+    False, ''norm_out'': False, ''n_e'': 512, ''e_dim'': 64}, ''sh'': {''hidden_scalar'':
+    ''${model.node_embed_size}'', ''C'': 4, ''L_max'': 8, ''R_bins'': 24, ''L_edge'':
+    2, ''n_layers'': 12, ''n_radial'': 8, ''dropout'': 0.1, ''k_neighbors'': 24, ''num_classes'':
+    20, ''r_max'': 8, ''voxel_size'': 0.25, ''min_peak_distance'': 0.8, ''topk_per_channel'':
+    [10, 4, 3, 1]}, ''FA'': {''d_model'': ''${model.node_embed_size}'', ''n_heads'':
+    24, ''num_layers'': 12}}}'

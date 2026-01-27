@@ -1,0 +1,95 @@
+shared:
+  seed: 123
+  max_cache_size: 90_000
+  samples_per_eval_length: 5
+  num_eval_lengths : 8
+  max_eval_length: 1000
+
+  # Gaussian parameters
+  base_thickness: 0.5  # Base thickness for Gaussian scaling (Angstrom)
+
+  # Scaffolding parameters
+  min_motif_percent: 0.00
+  max_motif_percent: 0.0
+
+
+val_dataset:
+  seed: ${shared.seed}
+  csv_path: /media/junyu/DATA/epoch163_native_structures_pdb/processed/metadata.csv
+  max_cache_size: ${shared.max_cache_size}
+  do_not_filter: True
+  cache_num_res: 0
+  add_plddt_mask: False
+
+  max_eval_length: ${shared.max_eval_length}
+  inpainting_percent: 1.0
+  base_thickness: ${shared.base_thickness}
+
+  samples_per_eval_length: 1
+  num_eval_lengths: 1
+  # Filtering
+  filter:
+    max_num_res: 1000
+    min_num_res: 30
+
+
+
+
+
+scope_dataset:
+  seed: ${shared.seed}
+  csv_path: /home/junyu/project/protein-frame-flow-u/data/preprocessed/metadata.csv
+  max_cache_size: ${shared.max_cache_size}
+  cache_num_res: 0
+  add_plddt_mask: False
+  max_eval_length: ${shared.max_eval_length}
+  inpainting_percent: 1.0
+  base_thickness: ${shared.base_thickness}
+
+  # Eval parameters
+  samples_per_eval_length: ${shared.samples_per_eval_length}
+  num_eval_lengths: ${shared.num_eval_lengths}
+
+  # Filtering
+  filter:
+    max_num_res: 512
+    min_num_res: 60
+
+  # Scaffolding
+  min_motif_percent: ${shared.min_motif_percent}
+  max_motif_percent: ${shared.max_motif_percent} 
+
+
+pdb_dataset:
+  seed: ${shared.seed}
+  csv_path: /root/autodl-tmp/pu/metadata/pdb_metadata_with_dates.csv
+  cluster_path: /root/autodl-tmp/pu/metadata/pdb.clusters
+
+#  csv_path: /home/junyu/project/pu/metadata/pdb_metadata_with_dates_local.csv
+#  cluster_path: /home/junyu/project/pu/metadata/pdb.clusters
+
+  max_cache_size: ${shared.max_cache_size}
+  cache_num_res: 1000
+  inpainting_percent: 1.0
+
+  add_plddt_mask: False
+  max_eval_length: ${shared.max_eval_length}
+  base_thickness: ${shared.base_thickness}
+
+  # Eval parameters
+  samples_per_eval_length: ${shared.samples_per_eval_length}
+  num_eval_lengths: ${shared.num_eval_lengths}
+
+  # Filtering
+  filter:
+    max_num_res: 250
+    min_num_res: 60
+    max_coil_percent: 0.5
+    rog_quantile: 0.96
+    oligomeric: ['monomeric']
+    num_chains: [1]
+
+  # Scaffolding
+  min_motif_percent: ${shared.min_motif_percent} 
+  max_motif_percent: ${shared.max_motif_percent}
+  

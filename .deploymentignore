@@ -1,0 +1,66 @@
+# PyCharm Deployment Ignore File
+# 不上传这些文件和目录
+
+# 输出目录
+outputs/
+experiments/outputs/
+experiments/lightning_logs/
+experiments/inference_outputs/
+experiments/wandb/
+lightning_logs/
+wandb/
+/wandb
+/experiments/wandb
+
+# 权重文件
+output/weight/
+ckpt/
+/ckpt
+experiments/ckpt/
+*.pt
+*.pth
+*.ckpt
+weight/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 数据缓存
+.cache/
+*.log
+
+# 评估结果
+evaluations/ProteinMPNN/outputs/
+esmfold_eval/
+esmfold_evaluation/
+
+# 大文件
+*.npz
+*.npy
+*.pkl
+examples/*/preprocessed/
+
+# PDB和生物数据文件
+*.pdb
+*.ply
+*.splat
+
+# 第三方库目录
+openfold/
+chroma/
+motif_scaffolding/

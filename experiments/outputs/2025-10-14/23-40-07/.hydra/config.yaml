@@ -1,0 +1,213 @@
+data:
+  task: hallucination
+  dataset: pdb
+  loader:
+    num_workers: 12
+    prefetch_factor: 2
+  sampler:
+    max_batch_size: 20
+    max_num_res_squared: 160000
+interpolant:
+  min_t: 0.0001
+  twisting:
+    use: false
+  rots:
+    corrupt: true
+    sample_schedule: exp
+    exp_rate: 10
+  trans:
+    corrupt: true
+    batch_ot: true
+    sample_schedule: linear
+    sample_temp: 1.0
+    vpsde_bmin: 0.1
+    vpsde_bmax: 20.0
+    potential: null
+    potential_t_scaling: false
+    rog:
+      weight: 10.0
+      cutoff: 5.0
+  sampling:
+    num_timesteps: 10
+    do_sde: false
+  self_condition: ${model.edge_features.self_condition}
+experiment:
+  task: shfbb
+  noise_scheme: side_atoms
+  debug: false
+  seed: 123
+  num_devices: 1
+  warm_start: null
+  warm_start_cfg_override: true
+  training:
+    trans_loss_weight: 1.0
+    rot_loss_weight: 0.5
+    rot_loss_t_threshold: 0.0
+    separate_rot_loss: true
+    trans_x0_threshold: 0.0
+    bb_atom_scale: 1
+    bb_atom_loss_weight: 1
+    bb_atom_loss_t_filter: 0.25
+    dist_mat_loss_weight: 1.0
+    dist_mat_loss_t_filter: 0.25
+    aux_loss_weight: 0.25
+    chil_loss_weight: 10
+    type_loss_weight: 1
+    atom_loss_weight: 0.2
+    SH_loss_weight: 10
+  wandb:
+    name: ${data.dataset}__ENcoder11atoms_chroma_features_maskall_SNR_testnewppl_noiseinsacle8_notleak
+    project: se3-fm_sh
+    notes: ''
+  optimizer:
+    lr: 0.0001
+  trainer:
+    overfit_batches: 0
+    min_epochs: 1
+    max_epochs: 1000
+    accelerator: gpu
+    log_every_n_steps: 1
+    deterministic: false
+    strategy: auto
+    check_val_every_n_epoch: 2
+    accumulate_grad_batches: 2
+    num_sanity_val_steps: 0
+  checkpointer:
+    dirpath: ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    save_last: true
+    save_top_k: 2
+    monitor: valid/loss
+    mode: min
+  inference_dir: null
+shared:
+  seed: 123
+  max_cache_size: 100000
+  samples_per_eval_length: 5
+  num_eval_lengths: 8
+  max_eval_length: 1000
+  min_motif_percent: 0.0
+  max_motif_percent: 0.0
+val_dataset:
+  seed: ${shared.seed}
+  csv_path: /home/junyu/project/casp15/targets/preprocessed/metadata.csv
+  max_cache_size: ${shared.max_cache_size}
+  do_not_filter: true
+  cache_num_res: 0
+  add_plddt_mask: false
+  max_eval_length: ${shared.max_eval_length}
+  inpainting_percent: 1.0
+  samples_per_eval_length: 1
+  num_eval_lengths: 1
+  filter:
+    max_num_res: 1000
+    min_num_res: 30
+scope_dataset:
+  seed: ${shared.seed}
+  csv_path: /home/junyu/project/protein-frame-flow-u/data/preprocessed/metadata.csv
+  max_cache_size: ${shared.max_cache_size}
+  cache_num_res: 0
+  add_plddt_mask: false
+  max_eval_length: ${shared.max_eval_length}
+  inpainting_percent: 1.0
+  samples_per_eval_length: ${shared.samples_per_eval_length}
+  num_eval_lengths: ${shared.num_eval_lengths}
+  filter:
+    max_num_res: 512
+    min_num_res: 60
+  min_motif_percent: ${shared.min_motif_percent}
+  max_motif_percent: ${shared.max_motif_percent}
+pdb_dataset:
+  seed: ${shared.seed}
+  csv_path: /root/autodl-tmp/pu/metadata/pdb_metadata_with_dates.csv
+  cluster_path: /root/autodl-tmp/pu/metadata/pdb.clusters
+  max_cache_size: ${shared.max_cache_size}
+  cache_num_res: 1000
+  inpainting_percent: 1.0
+  add_plddt_mask: false
+  max_eval_length: ${shared.max_eval_length}
+  samples_per_eval_length: ${shared.samples_per_eval_length}
+  num_eval_lengths: ${shared.num_eval_lengths}
+  filter:
+    max_num_res: 400
+    min_num_res: 60
+    max_coil_percent: 0.5
+    rog_quantile: 0.96
+    oligomeric:
+    - monomeric
+    num_chains:
+    - 1
+  min_motif_percent: ${shared.min_motif_percent}
+  max_motif_percent: ${shared.max_motif_percent}
+model:
+  node_embed_size: 256
+  edge_embed_size: 128
+  symmetric: false
+  node_features:
+    c_s: ${model.node_embed_size}
+    c_pos_emb: 128
+    c_timestep_emb: 128
+    max_num_res: 2000
+    timestep_int: 1000
+    embed_chain: false
+  edge_features:
+    single_bias_transition_n: 2
+    c_s: ${model.node_embed_size}
+    c_p: ${model.edge_embed_size}
+    relpos_k: 64
+    feat_dim: 64
+    num_bins: 22
+    self_condition: true
+    embed_chain: false
+    embed_diffuse_mask: true
+  ipa:
+    c_s: ${model.node_embed_size}
+    c_z: ${model.edge_embed_size}
+    c_hidden: 16
+    no_heads: 8
+    no_qk_points: 8
+    no_v_points: 12
+    seq_tfmr_num_heads: 4
+    seq_tfmr_num_layers: 2
+    num_blocks: 6
+  Hourglass:
+    dim: ${model.node_embed_size}
+    depth:
+    - 2
+    - 2
+    shorten_factor:
+    - 1
+    - 1
+    downproj_factor:
+    - 1
+    - 1
+    attn_resampling: true
+    updown_sample_type: linear
+    heads: 8
+    dim_head: 64
+    causal: false
+    norm_out: false
+    n_e: 512
+    e_dim: 64
+  sh:
+    hidden_scalar: ${model.node_embed_size}
+    C: 4
+    L_max: 8
+    R_bins: 24
+    L_edge: 2
+    n_layers: 12
+    n_radial: 8
+    dropout: 0.1
+    k_neighbors: 24
+    num_classes: 20
+    r_max: 8
+    voxel_size: 0.25
+    min_peak_distance: 0.8
+    topk_per_channel:
+    - 10
+    - 4
+    - 3
+    - 1
+  FA:
+    d_model: ${model.node_embed_size}
+    n_heads: 24
+    num_layers: 12

@@ -1,0 +1,202 @@
+data:
+  task: hallucination
+  dataset: pdb
+  val_dataset_override: val
+  loader:
+    num_workers: 12
+    prefetch_factor: 2
+  sampler:
+    max_batch_size: 12
+    max_num_res_squared: 20000
+interpolant:
+  min_t: 0.0001
+  coord_scale: 1
+  twisting:
+    use: false
+  rots:
+    corrupt: false
+    sample_schedule: exp
+    exp_rate: 10
+  trans:
+    corrupt: false
+    batch_ot: true
+    sample_schedule: linear
+    sample_temp: 1.0
+    vpsde_bmin: 0.1
+    vpsde_bmax: 20.0
+    potential: null
+    potential_t_scaling: false
+    rog:
+      weight: 10.0
+      cutoff: 5.0
+  sampling:
+    num_timesteps: 10
+    do_sde: true
+  self_condition: ${model.edge_features.self_condition}
+experiment:
+  task: fbb
+  noise_scheme: side_atoms
+  debug: true
+  seed: 123
+  num_devices: 1
+  warm_start: null
+  warm_start_cfg_override: true
+  save_val_samples: true
+  training:
+    log_sh_grad_norm: true
+    use_snr_weight: true
+    trans_loss_weight: 1.0
+    rot_loss_weight: 0.5
+    rot_loss_t_threshold: 0.0
+    separate_rot_loss: true
+    trans_x0_threshold: 0.0
+    bb_atom_scale: 1
+    bb_atom_loss_weight: 1
+    bb_atom_loss_t_filter: 0.25
+    dist_mat_loss_weight: 1.0
+    dist_mat_loss_t_filter: 0.25
+    aux_loss_weight: 0.25
+    chil_loss_weight: 10
+    type_loss_weight: 0.01
+    atom_loss_weight: 1.0
+    sh_tau_threshold: 0.0
+    SH_loss_weight: 0.01
+    base_thickness: 0.5
+    pair_loss_weight: 1.0
+    huber_loss_weight: 1.0
+    w_param: 5.0
+    w_nll: 0.0003
+  wandb:
+    name: ${data.dataset}__shdiffusion_decoder_ctx_shloss
+    project: se3-fm_sh
+    notes: 'SH diffusion decoder experiment: uniform sample t in train - coord_scale=1.0,
+      Feat2Atom11 out_range=8.0 for balanced corruption - type loss disabled (type_loss_weight=0)
+      - SHFeatureHead + contextual Transformer consume noisy SH_t - log atom_mse per
+      t-bin (0-0.25,...,0.75-1.0) and atom03~atom13 MSE to track distal collapse -
+      rerun after velocity→coordinate fix + coordinate loss reinstate; expect cleaner
+      sidechains Goal: validate SH + strong decoder under heavier noise before full
+      diffusion rollouts, now with per-atom monitoring.
+
+      '
+  optimizer:
+    lr: 0.0001
+  trainer:
+    overfit_batches: 0
+    min_epochs: 1
+    max_epochs: 1000
+    accelerator: gpu
+    log_every_n_steps: 1
+    deterministic: false
+    strategy: auto
+    check_val_every_n_epoch: 2
+    accumulate_grad_batches: 2
+    num_sanity_val_steps: 0
+    limit_train_batches: 1.0
+    limit_val_batches: 1.0
+  checkpointer:
+    dirpath: ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    save_last: true
+    save_top_k: 2
+    monitor: valid/loss
+    mode: min
+  inference_dir: null
+shared:
+  seed: 123
+  max_cache_size: 90000
+  samples_per_eval_length: 5
+  num_eval_lengths: 8
+  max_eval_length: 1000
+  base_thickness: 0.5
+  min_motif_percent: 0.0
+  max_motif_percent: 0.0
+val_dataset:
+  seed: ${shared.seed}
+  csv_path: /media/junyu/DATA/epoch163_native_structures_pdb/processed/metadata.csv
+  max_cache_size: ${shared.max_cache_size}
+  do_not_filter: true
+  cache_num_res: 0
+  add_plddt_mask: false
+  max_eval_length: ${shared.max_eval_length}
+  inpainting_percent: 1.0
+  base_thickness: ${shared.base_thickness}
+  samples_per_eval_length: 1
+  num_eval_lengths: 1
+  filter:
+    max_num_res: 1000
+    min_num_res: 30
+scope_dataset:
+  seed: ${shared.seed}
+  csv_path: /home/junyu/project/protein-frame-flow-u/data/preprocessed/metadata.csv
+  max_cache_size: ${shared.max_cache_size}
+  cache_num_res: 0
+  add_plddt_mask: false
+  max_eval_length: ${shared.max_eval_length}
+  inpainting_percent: 1.0
+  base_thickness: ${shared.base_thickness}
+  samples_per_eval_length: ${shared.samples_per_eval_length}
+  num_eval_lengths: ${shared.num_eval_lengths}
+  filter:
+    max_num_res: 512
+    min_num_res: 60
+  min_motif_percent: ${shared.min_motif_percent}
+  max_motif_percent: ${shared.max_motif_percent}
+pdb_dataset:
+  seed: ${shared.seed}
+  csv_path: /root/autodl-tmp/pu/metadata/pdb_metadata_with_dates.csv
+  cluster_path: /root/autodl-tmp/pu/metadata/pdb.clusters
+  max_cache_size: ${shared.max_cache_size}
+  cache_num_res: 1000
+  inpainting_percent: 1.0
+  add_plddt_mask: false
+  max_eval_length: ${shared.max_eval_length}
+  base_thickness: ${shared.base_thickness}
+  samples_per_eval_length: ${shared.samples_per_eval_length}
+  num_eval_lengths: ${shared.num_eval_lengths}
+  filter:
+    max_num_res: 250
+    min_num_res: 60
+    max_coil_percent: 0.5
+    rog_quantile: 0.96
+    oligomeric:
+    - monomeric
+    num_chains:
+    - 1
+  min_motif_percent: ${shared.min_motif_percent}
+  max_motif_percent: ${shared.max_motif_percent}
+model:
+  use_esm: false
+  coord_out_range: 8
+  node_embed_size: 384
+  edge_embed_size: 128
+  symmetric: false
+  node_features:
+    c_s: ${model.node_embed_size}
+    c_pos_emb: 128
+    c_timestep_emb: 128
+    max_num_res: 2000
+    timestep_int: 1000
+    embed_chain: false
+  edge_features:
+    single_bias_transition_n: 2
+    c_s: ${model.node_embed_size}
+    c_p: ${model.edge_embed_size}
+    relpos_k: 64
+    feat_dim: 64
+    num_bins: 22
+    self_condition: true
+    embed_chain: false
+    embed_diffuse_mask: true
+  ipa:
+    c_s: ${model.node_embed_size}
+    c_z: ${model.edge_embed_size}
+    hgfc_z: ${model.edge_embed_size}
+    c_hidden: 16
+    no_heads: 8
+    no_qk_points: 8
+    no_v_points: 12
+    seq_tfmr_num_heads: 4
+    seq_tfmr_num_layers: 2
+    num_blocks: 6
+  sidechain_atoms:
+    hidden: ${model.node_embed_size}
+  num_downsample: 1

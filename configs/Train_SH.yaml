@@ -1,0 +1,141 @@
+defaults:
+  - _self_
+  - datasets
+  - SH
+
+
+data:
+
+  # Available tasks: hallucination, inpainting
+  task: hallucination
+
+  # Available tasks: pdb, scope, val
+  dataset: pdb  # 训练数据集：PDB
+
+  # 【新增】验证数据集覆盖：让验证用 CASP15 数据集
+  val_dataset_override: val
+
+  loader:
+    num_workers: 12
+    prefetch_factor: 2
+
+  sampler:
+    # Setting for 48GB GPUs
+    max_batch_size: 12
+    max_num_res_squared: 20_000
+
+interpolant:
+  min_t: 1e-4
+  coord_scale: 1
+  twisting:
+    use: False
+
+  rots:
+    corrupt: False
+    sample_schedule: exp
+    exp_rate: 10
+
+  trans:
+    corrupt: False
+    batch_ot: True
+    sample_schedule: linear
+    sample_temp: 1.0
+    vpsde_bmin: 0.1
+    vpsde_bmax: 20.0
+    potential: null
+    potential_t_scaling: False
+    rog:
+      weight: 10.0
+      cutoff: 5.0
+
+  sampling:
+    num_timesteps: 10
+    do_sde: True
+
+  self_condition: ${model.edge_features.self_condition}
+
+experiment:
+  task: fbb
+  noise_scheme: side_atoms
+  debug: True
+  seed: 123
+  num_devices: 1
+  warm_start:
+  warm_start_cfg_override: True
+
+  # 【新增】验证时保存样本（PDB + FASTA）
+  save_val_samples: True  # 设为 True 启用验证样本保存
+
+  training:
+    log_sh_grad_norm: True
+    use_snr_weight: True
+    trans_loss_weight: 1.0
+    rot_loss_weight: 0.5
+    rot_loss_t_threshold: 0.0
+    separate_rot_loss: True
+    trans_x0_threshold: 0.0
+    bb_atom_scale: 1
+    bb_atom_loss_weight: 1
+    bb_atom_loss_t_filter: 0.25
+    dist_mat_loss_weight: 1.0
+    dist_mat_loss_t_filter: 0.25
+    aux_loss_weight: 0.25
+    chil_loss_weight: 10
+    type_loss_weight: 0.01  # 降低type权重(已经98.7%准确)
+    atom_loss_weight: 1.0  # 提高atom权重(RMSD还很大)
+    sh_tau_threshold: 0.0  # SH密度threshold (0=关闭, 0.2=过滤低密度)
+    SH_loss_weight: 0.01
+
+    # ========== Gaussian Parameters ==========
+    base_thickness: 0.5        # Base thickness for Gaussian scaling (Angstrom)
+
+    # ========== IGA Loss Weights (新增) ==========
+    # Legacy Coordinate Weights
+    pair_loss_weight: 1.0      # Pairwise distance loss
+    huber_loss_weight: 1.0     # Huber loss
+
+    # IGA-Specific Weights
+    w_param: 5.0               # Gaussian parameter (offset + scaling) MSE
+    w_nll: 0.0003              # NLL loss (已根据测试报告调整)
+    # w_seq 使用上面的 type_loss_weight (0.01)
+  wandb:
+    name: ${data.dataset}__shdiffusion_decoder_ctx_shloss
+    project: se3-fm_sh
+    notes: >
+      SH diffusion decoder experiment:
+      uniform sample t in train
+      - coord_scale=1.0, Feat2Atom11 out_range=8.0 for balanced corruption
+      - type loss disabled (type_loss_weight=0)
+      - SHFeatureHead + contextual Transformer consume noisy SH_t
+      - log atom_mse per t-bin (0-0.25,...,0.75-1.0) and atom03~atom13 MSE to track distal collapse
+      - rerun after velocity→coordinate fix + coordinate loss reinstate; expect cleaner sidechains
+      Goal: validate SH + strong decoder under heavier noise before full diffusion rollouts, now with per-atom monitoring.
+
+
+
+  optimizer:
+    lr: 0.0001
+  trainer:
+    overfit_batches: 0
+    min_epochs: 1 # prevents early stopping
+    max_epochs: 1000
+    accelerator: gpu
+    log_every_n_steps: 1
+    deterministic: False
+    strategy: auto
+    check_val_every_n_epoch: 2
+    accumulate_grad_batches: 2
+    num_sanity_val_steps: 0
+    # 正常训练模式 (改成0只跑验证)
+    limit_train_batches: 1.0
+    limit_val_batches: 1.0
+
+
+  checkpointer:
+    dirpath: ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    save_last: True
+    save_top_k: 2
+    monitor: valid/loss
+    mode: min
+  # Keep this null. Will be populated at runtime.
+  inference_dir: null

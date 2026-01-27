@@ -1,0 +1,86 @@
+data:
+  dataset: val
+  loader:
+    num_workers: 12
+    prefetch_factor: 2
+  sampler:
+    max_batch_size: 1
+    max_num_res_squared: 160000
+  task: hallucination
+defaults:
+- _self_
+- datasets
+- SH
+experiment:
+  checkpointer:
+    dirpath: ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    mode: min
+    monitor: valid/local_mse_loss
+    save_last: true
+    save_top_k: 2
+  ckpt_path: /media/junyu/DATA/pu5090weight/pdb__fbb_iga_simplified_attention_xlocal_2025-12-09_13-52-05/epoch=165-step=153384.ckpt
+  debug: false
+  inference_dir: outputs/IGA_xlocal=μ+u⊙σ_ffvaldata
+  noise_scheme: Gaussianatoms
+  num_devices: 1
+  optimizer:
+    lr: 0.0001
+  seed: 123
+  task: fbb
+  trainer:
+    accelerator: gpu
+    accumulate_grad_batches: 2
+    check_val_every_n_epoch: 2
+    deterministic: false
+    log_every_n_steps: 1
+    max_epochs: 50
+    min_epochs: 1
+    overfit_batches: 0
+    strategy: auto
+  training:
+    base_thickness: 0.5
+    SH_loss_weight: 10
+    atom_loss_weight: 0.02
+    aux_loss_weight: 0.25
+    bb_atom_loss_t_filter: 0.25
+    bb_atom_loss_weight: 1.0
+    bb_atom_scale: 10
+    chil_loss_weight: 10
+    dist_mat_loss_t_filter: 0.25
+    dist_mat_loss_weight: 1.0
+    rot_loss_t_threshold: 0.0
+    rot_loss_weight: 0.5
+    separate_rot_loss: true
+    trans_loss_weight: 1.0
+    trans_x0_threshold: 0.0
+    type_loss_weight: 0.02
+  wandb:
+    name: ${data.dataset}_seperated_Rm0_t0
+    notes: ''
+    project: se3-fm_sh
+  warm_start_cfg_override: true
+interpolant:
+  coord_scale: 1.0
+  min_t: 1e-4
+  rots:
+    corrupt: true
+    exp_rate: 10
+    sample_schedule: exp
+  sampling:
+    do_sde: False
+    num_timesteps: 100
+  self_condition: ${model.edge_features.self_condition}
+  trans:
+    batch_ot: true
+    corrupt: true
+    potential: null
+    potential_t_scaling: false
+    rog:
+      cutoff: 5.0
+      weight: 10.0
+    sample_schedule: linear
+    sample_temp: 1.0
+    vpsde_bmax: 20.0
+    vpsde_bmin: 0.1
+  twisting:
+    use: false

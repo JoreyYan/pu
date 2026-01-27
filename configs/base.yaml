@@ -1,0 +1,116 @@
+defaults:
+  - _self_
+  - datasets
+  - vae
+
+data:
+
+  # Available tasks: hallucination, inpainting
+  task: hallucination
+
+  # Available tasks: pdb, scope
+  dataset: scope
+
+  loader:
+    num_workers: 16
+    prefetch_factor: 16
+
+  sampler:
+    # Setting for 48GB GPUs
+    max_batch_size: 80
+    max_num_res_squared: 160_000
+
+interpolant:
+  min_t: 1e-4
+
+  twisting:
+    use: False
+
+  rots:
+    corrupt: True
+    sample_schedule: exp
+    exp_rate: 10
+  shs:
+    scale: 4.14
+
+  trans:
+    corrupt: True
+    batch_ot: True
+    sample_schedule: linear
+    sample_temp: 1.0
+    vpsde_bmin: 0.1
+    vpsde_bmax: 20.0
+    potential: null
+    potential_t_scaling: False
+    rog:
+      weight: 10.0
+      cutoff: 5.0
+
+  sampling:
+    num_timesteps: 100
+    do_sde: False
+
+  self_condition: ${model.edge_features.self_condition}
+
+experiment:
+  task: shdiffusion
+  debug: False
+  seed: 123
+  num_devices: 1
+  warm_start:
+  warm_start_cfg_override: True
+  training:
+    mask_plddt: True
+    bb_atom_scale: 0.1
+    trans_scale: 0.1
+    translation_loss_weight: 1.0
+    t_normalize_clip: 0.9
+    rotation_loss_weights: 1.
+    fape_loss_weights: 1.0
+    aux_loss_weight: 0.2
+    aux_loss_use_bb_loss: True
+    aux_loss_use_pair_loss: True
+    aux_loss_t_pass: 0.5
+    vq_loss_weight: 0.01
+  wandb:
+    name: ${data.task}_${data.dataset}_vaeEMA_fapeloss_IPA
+    project: se3-fm2
+    id: songsq866
+    resume: 'must'
+    notes: >
+      depth: [ 2, 2 ]
+      shorten_factor: [1,1]
+      downproj_factor: [1,1]
+      chroma_features
+      vq_loss_weight:0.01
+      standard init
+      AUXLOSS 0.2
+      chroma_cnn3_notshort
+      noclip
+      FAPELOSS loss weight 1
+      VAE 256DIM
+      self.trunk[f'ipa_{b}'] =rope3D.InvariantPointAttention(self._ipa_conf)
+
+
+  optimizer:
+    lr: 0.0001
+  trainer:
+    overfit_batches: 0
+    min_epochs: 1 # prevents early stopping
+    max_epochs: 1000
+    accelerator: cpu
+    log_every_n_steps: 1
+    deterministic: False
+    strategy: auto
+    check_val_every_n_epoch: 2
+    accumulate_grad_batches: 2
+
+
+  checkpointer:
+    dirpath: ckpt/${experiment.wandb.project}/${experiment.wandb.name}/${now:%Y-%m-%d}_${now:%H-%M-%S}
+    save_last: True
+    save_top_k: 3
+    monitor: valid/non_coil_percent
+    mode: max
+  # Keep this null. Will be populated at runtime.
+  inference_dir: null

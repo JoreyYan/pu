@@ -1,0 +1,5 @@
+Metric,PDB_Validation,CASP15,Delta
+TM-score,0.893,0.508,-0.385
+RMSD,3.097,16.476,13.379
+pLDDT (注意：这是native pLDDT!),82.543,53.089,-29.454
+pAE,5.870,16.116,10.246
