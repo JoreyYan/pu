@@ -400,9 +400,14 @@ class Interpolant:
             'trans_t': trans_t,
             'rotmats_t': rotmats_t,
             't': t,
+            "trans_1": trans_1,
+            "rotmats_1": rotmats_1,
+            "local_mean_1": batch['local_mean_1'],
             'res_mask': res_mask,
             'diffuse_mask': diffuse_mask
         }
+        noisy_batch['so3_t'] = t
+        noisy_batch['r3_t'] = t
         
         # =================================================================
         # [新增] Gaussian Parameter Flow Matching (Alpha & Scaling)
@@ -419,8 +424,19 @@ class Interpolant:
 
             # 2. 扰动参数 (使用通用的 _corrupt_parameter)
             # 注意：这里复用了 trans 的 diffuse_mask，假设侧链和主链一起被 mask
-            alpha_t = self._corrupt_parameter(alpha_1, t, res_mask, diffuse_mask)
-            scaling_log_t = self._corrupt_parameter(scaling_log_1, t, res_mask, diffuse_mask)
+            # For debugging IGA attention stability, we optionally keep ellipsoid params uncorrupted.
+            corrupt_gaussian = True
+            if hasattr(self._cfg, "gaussian_params") and hasattr(self._cfg.gaussian_params, "corrupt"):
+                corrupt_gaussian = bool(self._cfg.gaussian_params.corrupt)
+            elif hasattr(self._cfg, "corrupt_gaussian_params"):
+                corrupt_gaussian = bool(self._cfg.corrupt_gaussian_params)
+
+            if corrupt_gaussian:
+                alpha_t = self._corrupt_parameter(alpha_1, t, res_mask, diffuse_mask)
+                scaling_log_t = self._corrupt_parameter(scaling_log_1, t, res_mask, diffuse_mask)
+            else:
+                alpha_t = alpha_1
+                scaling_log_t = scaling_log_1
             
             # 3. 恢复 Local Mean_t
             scaling_t = torch.exp(scaling_log_t)
@@ -446,6 +462,7 @@ class Interpolant:
 
         noisy_batch['res_idx']=batch['res_idx']
         noisy_batch['chain_idx'] = batch['chain_idx']
+        noisy_batch['aatype']=batch['aatype']
         return noisy_batch
 
     def corrupt_batch_ssq(self, batch):
