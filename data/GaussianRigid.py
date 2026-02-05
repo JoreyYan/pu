@@ -235,35 +235,25 @@ class OffsetGaussianRigid(Rigid):
         if D not in (6, 12):
             raise ValueError(f"Expect 6 or 12 dims, got {D}")
 
-        # openfold expects update_mask broadcastable to [..., 4] for quaternion updates,
-        # so we standardize to shape [..., 1] here.
-        m = update_mask
-        if m is not None:
-            if m.dim() == 2:
-                m = m[..., None]
-            elif m.dim() == 3 and m.shape[-1] == 1:
-                pass
-            else:
-                raise ValueError(f"update_mask must be [B,N] or [B,N,1], got {tuple(m.shape)}")
-
         # (1) 全局 R,t
         bb_update = update_vec[..., :6]
-        new_rigid = super().compose_q_update_vec(bb_update, update_mask=m)
+        new_rigid = super().compose_q_update_vec(bb_update, update_mask=update_mask)
 
-        # Default: keep current gaussian params unless explicitly updated.
-        local_mean_new = self._local_mean
-        new_scaling_log = self._scaling_log
+        # 默认保持
+
+
 
         if D == 12:
             d_alpha = update_vec[..., 6:9]
             d_log = update_vec[..., 9:12]
 
-            if m is not None:
-                d_alpha = d_alpha * m
-                d_log = d_log * m
+            if update_mask is not None:
+                d_alpha = d_alpha * update_mask[..., None]
+                d_log = d_log * update_mask[..., None]
 
 
             # log-scale：加法更新 + clamp（非常重要）
+            new_scaling_log = (self._scaling_log + d_log)
             LOG_MIN, LOG_MAX = -6.0, 3.0
 
             scaling = torch.exp(self._scaling_log).clamp_min(eps)
@@ -273,7 +263,7 @@ class OffsetGaussianRigid(Rigid):
             scaling_log_new = (self._scaling_log + d_log).clamp(LOG_MIN, LOG_MAX)
             local_mean_new = alpha_new * torch.exp(scaling_log_new)
 
-            new_scaling_log = (self._scaling_log + d_log).clamp(LOG_MIN, LOG_MAX)
+            new_scaling_log = new_scaling_log.clamp(LOG_MIN, LOG_MAX)
 
         return OffsetGaussianRigid(
             new_rigid._rots,
