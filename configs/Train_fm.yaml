@@ -77,11 +77,12 @@ experiment:
   wandb:
     # For IPA-vs-IGA debugging, encode the backbone here so runs are comparable in W&B.
     # Current code path: FlowModelIGA uses IGA attention + IPA BackboneUpdate (no GaussianUpdateBlock).
-    name: ${data.task}_${data.dataset}_IGAattn_IPAupdate
+    name: ${data.task}_${data.dataset}_IGAattn_IPAupdate_noGnoise
     project: se3-fm
     notes: >
       Debug run: FlowModelIGA uses IGA (InvariantGaussianAttention) in trunk, but updates backbone
       with IPA BackboneUpdate (SE3 compose_q_update) via OffsetGaussianRigid.compose_update_12D(6D).
+      Ellipsoid params (local_mean/scaling_log) are kept uncorrupted in the interpolant (gaussian_params.corrupt=false).
       Goal: isolate whether the regression comes from IGA attention or from the GaussianUpdateBlock.
   optimizer:
     lr: 0.0001

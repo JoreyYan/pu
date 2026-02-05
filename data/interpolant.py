@@ -424,8 +424,9 @@ class Interpolant:
 
             # 2. 扰动参数 (使用通用的 _corrupt_parameter)
             # 注意：这里复用了 trans 的 diffuse_mask，假设侧链和主链一起被 mask
-            # For debugging IGA attention stability, we optionally keep ellipsoid params uncorrupted.
-            corrupt_gaussian = True
+            # Default: keep ellipsoid params fixed unless explicitly enabled in config.
+            # This avoids geometry logits saturating when local_mean/scaling are heavily corrupted.
+            corrupt_gaussian = False
             if hasattr(self._cfg, "gaussian_params") and hasattr(self._cfg.gaussian_params, "corrupt"):
                 corrupt_gaussian = bool(self._cfg.gaussian_params.corrupt)
             elif hasattr(self._cfg, "corrupt_gaussian_params"):
