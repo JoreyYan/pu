@@ -310,7 +310,9 @@ class InvariantGaussianAttention(nn.Module):
         # self.scalar_qk_weights = nn.Parameter(torch.full((no_heads,), 1.0))
         # self.pair_weights = nn.Parameter(torch.full((no_heads,), 1.0))
         # >>> 新增：几何分支的 a、b（每个 head 一对），初始全 0 <<<
-        self.geo_scale = nn.Parameter(torch.full((no_heads,), 1.0))  # a_h
+        # Initialize small so geometry does not dominate early training.
+        # softplus(-4.0) ~= 0.018
+        self.geo_scale = nn.Parameter(torch.full((no_heads,), -4.0))  # a_h
         self.geo_bias = nn.Parameter(torch.zeros(no_heads))  # b_h
 
         # Bound Gaussian parameterization to keep geometry logits in a usable range.

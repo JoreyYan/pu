@@ -16,3 +16,6 @@ This index lists change records written by OpenAI Codex for this repo.
 
 - `2026-02-21_19-37-28_+0800_openai_iga_sigmaMin03nm_scaleP_results.md`
   - Early results for `bunuc9ei` vs IPA (matched step window 0..3087).
+
+- `2026-02-21_19-52-56_+0800_openai_iga_geoScale_init_minus4.md`
+  - Initialize `geo_scale` at -4.0 (softplus≈0.018) to soft-start geometry without a schedule.
