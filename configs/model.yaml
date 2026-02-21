@@ -30,5 +30,10 @@ model:
     seq_tfmr_num_layers: 1
     num_blocks: 6
 
+  # IGA attention geometry source: "pred" (default), "gt", or "mix"
+  iga_geo_attn_mode: pred
+  # Used when mode == "mix"; probability to use GT geometry for attention
+  iga_geo_attn_gt_prob: 1.0
+
   # Gaussian Parameters
   base_thickness: 0.5  # Base thickness for Gaussian scaling (Angstrom)

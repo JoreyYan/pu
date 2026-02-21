@@ -1058,6 +1058,9 @@ class FlowModelIGA(nn.Module):
         super().__init__()
         self._model_conf = model_conf
         self.ipa = model_conf.ipa
+        # IGA attention geometry source: "pred" (default), "gt", or "mix".
+        self.iga_geo_attn_mode = getattr(model_conf, "iga_geo_attn_mode", "pred")
+        self.iga_geo_attn_gt_prob = float(getattr(model_conf, "iga_geo_attn_gt_prob", 1.0))
         self.rigids_ang_to_nm = lambda x: x.scale_translation(du.ANG_TO_NM_SCALE)
         self.rigids_nm_to_ang = lambda x: x.scale_translation(du.NM_TO_ANG_SCALE)
         self.node_feature_net = NodeFeatureNet(model_conf.node_features)
@@ -1130,10 +1133,15 @@ class FlowModelIGA(nn.Module):
 
         rigids_nm = self._make_rigids_nm(input_feats)
 
-        # For IGA attention: use GT (clean) ellipsoid geometry so that Gaussian
-        # overlap is meaningful even when ellipsoid params are corrupted.
-        # The update block still operates on the corrupted rigids_nm.
-        if 'scaling_log_1' in input_feats and 'local_mean_1' in input_feats:
+        # For IGA attention, optionally use GT (clean) ellipsoid geometry to
+        # stabilize Gaussian overlap when ellipsoid params are corrupted.
+        use_gt_geo = False
+        if self.iga_geo_attn_mode == "gt":
+            use_gt_geo = True
+        elif self.iga_geo_attn_mode == "mix":
+            use_gt_geo = bool(torch.rand((), device=rigids_nm._trans.device) < self.iga_geo_attn_gt_prob)
+
+        if use_gt_geo and 'scaling_log_1' in input_feats and 'local_mean_1' in input_feats:
             # GT values are in Angstrom; convert to nm for consistency
             gt_scaling_log_nm = input_feats['scaling_log_1'] + math.log(du.ANG_TO_NM_SCALE)
             gt_local_mean_nm = input_feats['local_mean_1'] * du.ANG_TO_NM_SCALE
