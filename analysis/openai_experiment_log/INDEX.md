@@ -30,3 +30,8 @@ This index lists change records written by OpenAI Codex / Claude Code for this r
   - **[Claude Code]** Decouple IGA attention geometry from corrupted ellipsoid params.
   - Use GT ellipsoid geometry for IGA attention; update block still denoises corrupted rigids.
   - Files: `models/flow_model.py`, `configs/Train_fm.yaml`
+
+- `2026-02-21_23-30-00_+0800_claude_gtGeoAttn_results.md`
+  - **[Claude Code]** Results for `glhqu344` (GT-geo attention) vs IPA `fej59g91` at step 7514.
+  - Backbone gap ~1.25x vs IPA (matched window). Ellipsoid losses converging.
+  - Residual 4% scaling_loss spikes remain. Phase 4 thesis validated.
