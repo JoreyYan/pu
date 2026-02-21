@@ -93,8 +93,6 @@ experiment:
       rigids_nm (corrupted ellipsoid) for the update/denoising block.
       Config: gaussian_params.corrupt=true, local_mean + scaling_log loss enabled.
       IGA stability: logdet_min=-20, sigma_min_nm=0.03, 1/sqrt(P) scaling, geo_scale init=-4.0.
-model:
-  iga_geo_attn_mode: gt
   optimizer:
     lr: 0.0001
   trainer:
@@ -119,3 +117,6 @@ model:
     mode: max
   # Keep this null. Will be populated at runtime.
   inference_dir: null
+
+model:
+  iga_geo_attn_mode: gt
