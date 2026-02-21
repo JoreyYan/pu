@@ -19,3 +19,6 @@ This index lists change records written by OpenAI Codex for this repo.
 
 - `2026-02-21_19-52-56_+0800_openai_iga_geoScale_init_minus4.md`
   - Initialize `geo_scale` at -4.0 (softplus≈0.018) to soft-start geometry without a schedule.
+
+- `2026-02-21_20-14-10_+0800_openai_iga_geoInitM4_results.md`
+  - Early results for `vuzldfte` vs IPA (matched step window 0..1289).
