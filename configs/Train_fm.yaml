@@ -82,20 +82,17 @@ experiment:
   wandb:
     # For IPA-vs-IGA debugging, encode the backbone here so runs are comparable in W&B.
     # Current code path: FlowModelIGA uses IGA attention + IPA BackboneUpdate (no GaussianUpdateBlock).
-    name: ${data.task}_${data.dataset}_IGAattn_GaussUpdate_12D_Gnoise_logdetClamp20_sigmaMin03nm_scaleP_geoInitM4
+    name: ${data.task}_${data.dataset}_IGAattn_GaussUpdate_12D_Gnoise_gtGeoAttn_logdetClamp20_sigmaMin03nm_scaleP_geoInitM4
     project: se3-fm
     notes: >
-      12D run: FlowModelIGA uses IGA (InvariantGaussianAttention) in trunk and GaussianUpdateBlock
-      (12D) to update backbone + ellipsoid params. Ellipsoid params are now corrupted in the
-      interpolant (gaussian_params.corrupt=true) and optimized with local_mean + scaling_log loss.
-      This run also logs IGA numeric-stability diagnostics to W&B under `debug/iga/*`:
-      - `debug/iga/global/geo_scaled_absmax`, `debug/iga/global/wmax_sat_frac`, `debug/iga/global/log_det_min` every step
-      - layer snapshots `debug/iga/l0/*` and `debug/iga/l{last}/*` every `experiment.training.iga_debug_interval` steps.
-      Update: clamp raw log-det in IGA geometry logits with logdet_min=-20 to prevent near-singular covariances
-      from producing unbounded positive bias (-0.5*log|Sigma|) that saturates softmax.
-      Update: enforce sigma_min_nm=0.03 (0.3A) in IGA Gaussian geometry and scale Gaussian-point aggregation by
-      1/sqrt(P) to reduce geometry-logit blow-ups from tiny sigmas and keep magnitude stable vs P.
-      Update: initialize geo_scale to -4.0 (softplus~0.018) so geometry starts small and ramps by learning.
+      12D run with GT ellipsoid geometry for IGA attention. Corrupted ellipsoid params are
+      denoised by GaussianUpdateBlock but IGA attention uses clean GT geometry for stable
+      Gaussian overlap. Previous 12D run showed loss regression because corrupted local_mean
+      and scaling_log at low t produced meaningless Gaussian overlap distances in attention.
+      This fix decouples: iga_rigids_nm (GT ellipsoid + updated backbone) for attention,
+      rigids_nm (corrupted ellipsoid) for the update/denoising block.
+      Config: gaussian_params.corrupt=true, local_mean + scaling_log loss enabled.
+      IGA stability: logdet_min=-20, sigma_min_nm=0.03, 1/sqrt(P) scaling, geo_scale init=-4.0.
   optimizer:
     lr: 0.0001
   trainer:

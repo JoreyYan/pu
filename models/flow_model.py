@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -1129,6 +1130,20 @@ class FlowModelIGA(nn.Module):
 
         rigids_nm = self._make_rigids_nm(input_feats)
 
+        # For IGA attention: use GT (clean) ellipsoid geometry so that Gaussian
+        # overlap is meaningful even when ellipsoid params are corrupted.
+        # The update block still operates on the corrupted rigids_nm.
+        if 'scaling_log_1' in input_feats and 'local_mean_1' in input_feats:
+            # GT values are in Angstrom; convert to nm for consistency
+            gt_scaling_log_nm = input_feats['scaling_log_1'] + math.log(du.ANG_TO_NM_SCALE)
+            gt_local_mean_nm = input_feats['local_mean_1'] * du.ANG_TO_NM_SCALE
+            iga_rigids_nm = OffsetGaussianRigid(
+                rigids_nm._rots, rigids_nm._trans,
+                gt_scaling_log_nm, gt_local_mean_nm,
+            )
+        else:
+            iga_rigids_nm = rigids_nm
+
         node_embed = init_node_embed * node_mask[..., None]
         edge_embed = init_edge_embed * edge_mask[..., None]
 
@@ -1141,7 +1156,9 @@ class FlowModelIGA(nn.Module):
 
         for b in range(self.ipa.num_blocks):
             iga_mod = self.trunk[f"iga_{b}"]
-            iga_out = iga_mod(s=node_embed, z=edge_embed, r=rigids_nm, mask=node_mask)
+            # Attention uses clean GT geometry (iga_rigids_nm) for stable
+            # Gaussian overlap; denoising update operates on corrupted rigids_nm.
+            iga_out = iga_mod(s=node_embed, z=edge_embed, r=iga_rigids_nm, mask=node_mask)
             iga_out = iga_out * node_mask[..., None]
             node_embed = self.trunk[f"iga_ln_{b}"](node_embed + iga_out)
 
@@ -1171,6 +1188,14 @@ class FlowModelIGA(nn.Module):
             rigids_nm = self.trunk[f'gauss_update_{b}'](
                 node_embed, rigids_nm, mask=(node_mask * diffuse_mask)
             )
+
+            # Update iga_rigids_nm backbone (trans/rot) to track updates,
+            # but keep GT ellipsoid params for stable attention geometry.
+            if iga_rigids_nm is not rigids_nm:
+                iga_rigids_nm = OffsetGaussianRigid(
+                    rigids_nm._rots, rigids_nm._trans,
+                    iga_rigids_nm._scaling_log, iga_rigids_nm._local_mean,
+                )
 
         rigids_ang = rigids_nm.scale_translation(du.NM_TO_ANG_SCALE)
         scaling_log = rigids_ang._scaling_log

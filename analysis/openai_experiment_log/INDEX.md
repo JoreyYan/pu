@@ -1,6 +1,6 @@
 # Index
 
-This index lists change records written by OpenAI Codex for this repo.
+This index lists change records written by OpenAI Codex / Claude Code for this repo.
 
 - `2026-02-21_18-00-00_+0800_openai_iga_debug_metrics.md`
   - Add `debug/iga/*` logging (geometry/logits/saturation) to W&B.
@@ -25,3 +25,8 @@ This index lists change records written by OpenAI Codex for this repo.
 
 - `2026-02-21_20-52-02_+0800_openai_iga_12d_enable.md`
   - Enable 12D GaussianUpdateBlock + ellipsoid losses + gaussian param corruption.
+
+- `2026-02-21_22-00-00_+0800_claude_iga_gt_geo_attn.md`
+  - **[Claude Code]** Decouple IGA attention geometry from corrupted ellipsoid params.
+  - Use GT ellipsoid geometry for IGA attention; update block still denoises corrupted rigids.
+  - Files: `models/flow_model.py`, `configs/Train_fm.yaml`
