@@ -80,7 +80,7 @@ experiment:
   wandb:
     # For IPA-vs-IGA debugging, encode the backbone here so runs are comparable in W&B.
     # Current code path: FlowModelIGA uses IGA attention + IPA BackboneUpdate (no GaussianUpdateBlock).
-    name: ${data.task}_${data.dataset}_IGAattn_IPAupdate_noGnoise
+    name: ${data.task}_${data.dataset}_IGAattn_IPAupdate_noGnoise_logdetClamp20
     project: se3-fm
     notes: >
       Debug run: FlowModelIGA uses IGA (InvariantGaussianAttention) in trunk, but updates backbone
@@ -90,6 +90,8 @@ experiment:
       This run also logs IGA numeric-stability diagnostics to W&B under `debug/iga/*`:
       - `debug/iga/global/geo_scaled_absmax`, `debug/iga/global/wmax_sat_frac`, `debug/iga/global/log_det_min` every step
       - layer snapshots `debug/iga/l0/*` and `debug/iga/l{last}/*` every `experiment.training.iga_debug_interval` steps.
+      Update: clamp raw log-det in IGA geometry logits with logdet_min=-20 to prevent near-singular covariances
+      from producing unbounded positive bias (-0.5*log|Sigma|) that saturates softmax.
   optimizer:
     lr: 0.0001
   trainer:
