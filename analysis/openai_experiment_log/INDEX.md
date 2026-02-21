@@ -14,3 +14,5 @@ This index lists change records written by OpenAI Codex for this repo.
   - Enforce `sigma_min_nm=0.03` + scale geometry by `1/sqrt(P)` to avoid Mahalanobis blow-ups.
   - Commit: `721e94a`
 
+- `2026-02-21_19-37-28_+0800_openai_iga_sigmaMin03nm_scaleP_results.md`
+  - Early results for `bunuc9ei` vs IPA (matched step window 0..3087).
