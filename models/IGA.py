@@ -178,6 +178,7 @@ def transform_to_global_gaussian(
         r_backbone: OffsetGaussianRigid,  # 必须是 OffsetGaussianRigid 类型
         local_offset_u: torch.Tensor,  # [B, N, H, P, 3] unitless coords in ellipsoid-aligned frame
         local_scale_log_delta: torch.Tensor,  # [B, N, H, P, 3] log-scale deltas
+        sigma_min: float = 1e-6,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     将局部预测转换为全局高斯参数 (Global Gaussian)。
@@ -198,7 +199,7 @@ def transform_to_global_gaussian(
 
     # sigma_local: exp(base + delta), broadcast to [B,N,H,P,3]
     base_scale_log = r_backbone._scaling_log.unsqueeze(-2).unsqueeze(-2)
-    sigma_local = torch.exp(base_scale_log + local_scale_log_delta).clamp_min(1e-6)
+    sigma_local = torch.exp(base_scale_log + local_scale_log_delta).clamp_min(float(sigma_min))
 
     # Compose local mean using bounded u
     total_local_pos = anchor_mean + local_offset_u * sigma_local
@@ -209,7 +210,7 @@ def transform_to_global_gaussian(
     # 3. 计算全局协方差 (Covariance)
     # 逻辑: 调用类方法，基于 Current_Scale + Delta 计算 Sigma
     # r_expanded 内部的 _rots 会自动广播
-    Sigma = r_expanded.get_covariance_with_delta(local_scale_log_delta)
+    Sigma = r_expanded.get_covariance_with_delta(local_scale_log_delta, min_s=float(sigma_min))
 
     return mu_global, Sigma
 
@@ -253,6 +254,7 @@ class InvariantGaussianAttention(nn.Module):
             no_v_points: int,
             inf: float = 1e5,
             logdet_min: float = -20.0,
+            sigma_min_nm: float = 0.03,
             enable_vis: bool = False,
             vis_interval: int = 100,
             vis_dir: str = "./attention_vis",
@@ -267,6 +269,7 @@ class InvariantGaussianAttention(nn.Module):
         self.no_v_points = no_v_points
         self.inf = inf
         self.logdet_min = float(logdet_min)
+        self.sigma_min_nm = float(sigma_min_nm)
 
         # Vis config
         self.enable_vis = enable_vis
@@ -440,8 +443,8 @@ class InvariantGaussianAttention(nn.Module):
         k_off_delta, k_s_delta = parse_gaussian_lite(self.linear_k_gaussian(s))
 
         # Global Transform
-        q_mu, q_sigma = transform_to_global_gaussian(r, q_off_delta, q_s_delta)
-        k_mu, k_sigma = transform_to_global_gaussian(r, k_off_delta, k_s_delta)
+        q_mu, q_sigma = transform_to_global_gaussian(r, q_off_delta, q_s_delta, sigma_min=self.sigma_min_nm)
+        k_mu, k_sigma = transform_to_global_gaussian(r, k_off_delta, k_s_delta, sigma_min=self.sigma_min_nm)
 
         # Broadcasting
         q_mu = q_mu.permute(0, 2, 1, 3, 4);
@@ -462,7 +465,10 @@ class InvariantGaussianAttention(nn.Module):
         overlap_scores = -0.5 * dist_sq - 0.5 * log_det_used
 
         # Aggregate across Gaussian points per head
-        attn_bias_geo = overlap_scores.sum(dim=-1)
+        # Scale by 1/sqrt(P) so geometry magnitude does not grow linearly with
+        # number of Gaussian points per head.
+        scale_factor = 1.0 / math.sqrt(max(self.no_qk_gaussians, 1))
+        attn_bias_geo = overlap_scores.sum(dim=-1) * scale_factor
 
         # Z-Score Norm (Preserved)
         # geo = attn_bias_geo

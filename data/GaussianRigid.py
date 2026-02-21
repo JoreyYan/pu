@@ -105,7 +105,7 @@ class OffsetGaussianRigid(Rigid):
         return Sigma
 
 
-    def get_covariance_with_delta(self,delta_local_scale_log):
+    def get_covariance_with_delta(self, delta_local_scale_log, min_s: float = 1e-6):
         """
         计算加上微扰后的全局协方差矩阵。
         支持传入 delta_scale，用于 Attention 探测或 Loss 计算，而不改变内部状态。
@@ -115,11 +115,11 @@ class OffsetGaussianRigid(Rigid):
         R = self.get_rots().get_rot_mats()
 
         # [B, N, 3]
-        s = torch.exp(self._scaling_log+delta_local_scale_log)
+        s = torch.exp(self._scaling_log + delta_local_scale_log)
 
         # 1. 防止 s 过于微小导致下溢 (虽然 exp 保证正，但可能极小)
         # 这一步保证了 S^2 是“足够正”的
-        s = torch.clamp(s, min=1e-6)
+        s = torch.clamp(s, min=float(min_s))
 
         # 构造对角方差矩阵 S^2
         S_squared = torch.diag_embed(s * s)
