@@ -1,0 +1,16 @@
+# Index
+
+This index lists change records written by OpenAI Codex for this repo.
+
+- `2026-02-21_18-00-00_+0800_openai_iga_debug_metrics.md`
+  - Add `debug/iga/*` logging (geometry/logits/saturation) to W&B.
+  - Commits: `e86c1fd`, `9dd4feb`
+
+- `2026-02-21_18-13-45_+0800_openai_iga_logdet_clamp.md`
+  - Clamp `log_det` used in geometry logits to prevent unbounded positive bias.
+  - Commits: `0dc81b8`, `40382d9`
+
+- `2026-02-21_19-01-15_+0800_openai_iga_sigma_min_scaleP.md`
+  - Enforce `sigma_min_nm=0.03` + scale geometry by `1/sqrt(P)` to avoid Mahalanobis blow-ups.
+  - Commit: `721e94a`
+
