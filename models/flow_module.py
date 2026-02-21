@@ -433,20 +433,30 @@ class FlowModule(LightningModule):
             se3_vf_loss = se3_vf_loss + aa_weight * aa_loss + aa_logits.sum() * 0.0
 
         ellipsoid_local_mean_loss = None
-        if "ellipsoid_alpha" in model_output and "ellipsoid_scaling" in model_output:
+        ellipsoid_scaling_loss = None
+        if "ellipsoid_alpha" in model_output and "ellipsoid_scaling_log" in model_output:
             alpha_pred = model_output["ellipsoid_alpha"]
-            scaling_pred = model_output["ellipsoid_scaling"]
+            scaling_log_pred = model_output["ellipsoid_scaling_log"]
             if "local_mean_1" in noisy_batch:
+                scaling_pred = torch.exp(scaling_log_pred)
                 local_mean_pred = alpha_pred * scaling_pred
                 local_mean_gt = noisy_batch["local_mean_1"]
-                mse = (local_mean_pred - local_mean_gt) ** 2
+                mean_error = (local_mean_pred - local_mean_gt) / r3_norm_scale
                 ellipsoid_local_mean_loss = torch.sum(
-                    mse * loss_mask[..., None], dim=(-1, -2)
+                    mean_error ** 2 * loss_mask[..., None], dim=(-1, -2)
                 ) / (torch.sum(loss_mask, dim=-1) + 1e-8)
                 ell_weight = getattr(training_cfg, "ellipsoid_local_mean_loss_weight", 0.0)
                 se3_vf_loss = se3_vf_loss + ell_weight * ellipsoid_local_mean_loss
-            else:
-                se3_vf_loss = se3_vf_loss + (alpha_pred.sum() + scaling_pred.sum()) * 0.0
+            if "scaling_log_1" in noisy_batch:
+                scaling_log_gt = noisy_batch["scaling_log_1"]
+                log_error = (scaling_log_pred - scaling_log_gt) / r3_norm_scale
+                ellipsoid_scaling_loss = torch.sum(
+                    log_error ** 2 * loss_mask[..., None], dim=(-1, -2)
+                ) / (torch.sum(loss_mask, dim=-1) + 1e-8)
+                log_weight = getattr(training_cfg, "ellipsoid_scaling_loss_weight", 0.0)
+                se3_vf_loss = se3_vf_loss + log_weight * ellipsoid_scaling_loss
+            if ellipsoid_local_mean_loss is None and ellipsoid_scaling_loss is None:
+                se3_vf_loss = se3_vf_loss + (alpha_pred.sum() + scaling_log_pred.sum()) * 0.0
         if torch.any(torch.isnan(se3_vf_loss)):
             raise ValueError('NaN loss encountered')
         return {
@@ -458,6 +468,7 @@ class FlowModule(LightningModule):
             "aa_recovery": aa_recovery,
             "aa_perplexity": aa_perplexity,
             "ellipsoid_local_mean_loss": ellipsoid_local_mean_loss,
+            "ellipsoid_scaling_loss": ellipsoid_scaling_loss,
         }
 
 

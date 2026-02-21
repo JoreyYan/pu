@@ -456,6 +456,7 @@ class Interpolant:
             
             # 存储 GT 用于 Loss 计算 (如果需要)
             noisy_batch['alpha_1'] = alpha_1
+            noisy_batch['scaling_log_1'] = scaling_log_1
             
         else:
             # Fallback for backbone-only tasks or missing data

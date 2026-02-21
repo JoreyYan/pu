@@ -47,7 +47,7 @@ interpolant:
   gaussian_params:
     # When training/diagnosing IGA attention, keeping ellipsoid params fixed can
     # prevent geometry logits from saturating due to corrupted local_mean/scaling.
-    corrupt: False
+    corrupt: True
 
   sampling:
     num_timesteps: 100
@@ -74,19 +74,20 @@ experiment:
     aux_loss_use_bb_loss: True
     aux_loss_use_pair_loss: True
     aux_loss_t_pass: 0.5
+    ellipsoid_local_mean_loss_weight: 1.0
+    ellipsoid_scaling_loss_weight: 1.0
     # IGA debug logging (only active when the model returns `iga_debug`, i.e. FlowModelIGA backbone-only path).
     # Set to 1 to log layer-level stats every step (more overhead), or a larger number to reduce logging volume.
     iga_debug_interval: 10
   wandb:
     # For IPA-vs-IGA debugging, encode the backbone here so runs are comparable in W&B.
     # Current code path: FlowModelIGA uses IGA attention + IPA BackboneUpdate (no GaussianUpdateBlock).
-    name: ${data.task}_${data.dataset}_IGAattn_IPAupdate_noGnoise_logdetClamp20_sigmaMin03nm_scaleP_geoInitM4
+    name: ${data.task}_${data.dataset}_IGAattn_GaussUpdate_12D_Gnoise_logdetClamp20_sigmaMin03nm_scaleP_geoInitM4
     project: se3-fm
     notes: >
-      Debug run: FlowModelIGA uses IGA (InvariantGaussianAttention) in trunk, but updates backbone
-      with IPA BackboneUpdate (SE3 compose_q_update) via OffsetGaussianRigid.compose_update_12D(6D).
-      Ellipsoid params (local_mean/scaling_log) are kept uncorrupted in the interpolant (gaussian_params.corrupt=false).
-      Goal: isolate whether the regression comes from IGA attention or from the GaussianUpdateBlock.
+      12D run: FlowModelIGA uses IGA (InvariantGaussianAttention) in trunk and GaussianUpdateBlock
+      (12D) to update backbone + ellipsoid params. Ellipsoid params are now corrupted in the
+      interpolant (gaussian_params.corrupt=true) and optimized with local_mean + scaling_log loss.
       This run also logs IGA numeric-stability diagnostics to W&B under `debug/iga/*`:
       - `debug/iga/global/geo_scaled_absmax`, `debug/iga/global/wmax_sat_frac`, `debug/iga/global/log_det_min` every step
       - layer snapshots `debug/iga/l0/*` and `debug/iga/l{last}/*` every `experiment.training.iga_debug_interval` steps.

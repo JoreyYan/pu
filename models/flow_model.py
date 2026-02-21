@@ -1088,7 +1088,7 @@ class FlowModelIGA(nn.Module):
             )
             self.trunk[f"post_tfmr_{b}"] = ipa_pytorch.Linear(tfmr_in, self.ipa.c_s, init="final")
             self.trunk[f"node_transition_{b}"] = ipa_pytorch.StructureModuleTransition(c=self.ipa.c_s)
-            self.trunk[f'bb_update_{b}'] = ipa_pytorch.BackboneUpdate(self.ipa.c_s, use_rot_updates=True)
+            self.trunk[f'gauss_update_{b}'] = GaussianUpdateBlock(self.ipa.c_s, update_gaussian=True)
             if b < self.ipa.num_blocks - 1:
                 self.trunk[f"edge_transition_{b}"] = ipa_pytorch.EdgeTransition(
                     node_embed_size=self.ipa.c_s,
@@ -1168,14 +1168,19 @@ class FlowModelIGA(nn.Module):
             if b < self.ipa.num_blocks - 1:
                 edge_embed = self.trunk[f"edge_transition_{b}"](node_embed, edge_embed) * edge_mask[..., None]
 
-            rigid_update = self.trunk[f'bb_update_{b}'](node_embed * node_mask[..., None])
-            # Apply IPA-style SE(3) update, keeping gaussian params fixed.
-            rigids_nm = rigids_nm.compose_update_12D(rigid_update, update_mask=(node_mask * diffuse_mask))
+            rigids_nm = self.trunk[f'gauss_update_{b}'](
+                node_embed, rigids_nm, mask=(node_mask * diffuse_mask)
+            )
 
         rigids_ang = rigids_nm.scale_translation(du.NM_TO_ANG_SCALE)
+        scaling_log = rigids_ang._scaling_log
+        scaling = torch.exp(scaling_log)
+        alpha = rigids_ang._local_mean / (scaling + 1e-6)
         return {
             'pred_trans': rigids_ang.get_trans(),
             'pred_rotmats': rigids_ang.get_rots().get_rot_mats(),
+            'ellipsoid_alpha': alpha,
+            'ellipsoid_scaling_log': scaling_log,
             'iga_debug': {
                 **iga_debug,
                 "global/geo_scaled_absmax": geo_scaled_absmax_global,

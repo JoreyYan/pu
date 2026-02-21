@@ -22,3 +22,6 @@ This index lists change records written by OpenAI Codex for this repo.
 
 - `2026-02-21_20-14-10_+0800_openai_iga_geoInitM4_results.md`
   - Early results for `vuzldfte` vs IPA (matched step window 0..1289).
+
+- `2026-02-21_20-52-02_+0800_openai_iga_12d_enable.md`
+  - Enable 12D GaussianUpdateBlock + ellipsoid losses + gaussian param corruption.
