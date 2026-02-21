@@ -176,8 +176,8 @@ def compute_robust_nll_components(delta: torch.Tensor, sigma: torch.Tensor):
 
 def transform_to_global_gaussian(
         r_backbone: OffsetGaussianRigid,  # 必须是 OffsetGaussianRigid 类型
-        local_offset_delta: torch.Tensor,  # [B, N, H, P, 3] 预测的位移微扰
-        local_scale_log_delta: torch.Tensor,  # [B, N, H, P, 3] 预测的形状微扰
+        local_offset_u: torch.Tensor,  # [B, N, H, P, 3] unitless coords in ellipsoid-aligned frame
+        local_scale_log_delta: torch.Tensor,  # [B, N, H, P, 3] log-scale deltas
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     将局部预测转换为全局高斯参数 (Global Gaussian)。
@@ -190,12 +190,18 @@ def transform_to_global_gaussian(
     r_expanded = r_backbone.unsqueeze(-1).unsqueeze(-1)
 
     # 2. 计算全局中心 (Mean)
-    # 逻辑: Global = Frame * (Current_Local_Mean + Delta)
-    # 获取当前状态的 Anchor (上一层预测的侧链局部质心)
+    # We parameterize the mean offset in *units of sigma* to avoid
+    # unbounded Mahalanobis distances (e.g. -1e4 vs -10 saturation).
+    # Global = Frame * (Anchor_Local_Mean + u * sigma_local)
+    # Anchor is the current state local mean (centroid offset in backbone frame).
     anchor_mean = r_backbone._local_mean.unsqueeze(-2).unsqueeze(-2)
 
-    # 叠加微扰
-    total_local_pos = anchor_mean + local_offset_delta
+    # sigma_local: exp(base + delta), broadcast to [B,N,H,P,3]
+    base_scale_log = r_backbone._scaling_log.unsqueeze(-2).unsqueeze(-2)
+    sigma_local = torch.exp(base_scale_log + local_scale_log_delta).clamp_min(1e-6)
+
+    # Compose local mean using bounded u
+    total_local_pos = anchor_mean + local_offset_u * sigma_local
 
     # 变换到全局
     mu_global = r_expanded.apply(total_local_pos)
@@ -302,6 +308,12 @@ class InvariantGaussianAttention(nn.Module):
         self.geo_scale = nn.Parameter(torch.full((no_heads,), 1.0))  # a_h
         self.geo_bias = nn.Parameter(torch.zeros(no_heads))  # b_h
 
+        # Bound Gaussian parameterization to keep geometry logits in a usable range.
+        # - u_max controls how many sigmas the learned Gaussian centers can move.
+        # - log_scale_max controls exp(delta) range: [e^-m, e^m].
+        self.u_max = 3.0
+        self.log_scale_max = 2.0
+
 
 
         # [Modified] Output Dim includes Pair aggregation
@@ -312,6 +324,30 @@ class InvariantGaussianAttention(nn.Module):
         self.linear_out = Linear(concat_out_dim, c_s, init="final")
 
         self.softmax = nn.Softmax(dim=-1)
+        self._last_debug = None
+
+    def get_last_debug(self):
+        """Returns a dict of scalar tensors from the last forward() call (or None)."""
+        return self._last_debug
+
+    def _masked_mean_std_min_max(self, x: torch.Tensor, mask_2d: torch.Tensor):
+        """
+        x: [B, H, N, N]
+        mask_2d: [B, 1, N, N] (0/1)
+        Returns scalar tensors: mean, std, min, max over valid entries.
+        """
+        m = mask_2d
+        denom = m.sum(dim=(-1, -2), keepdim=True).clamp_min(1.0)
+        mean = (x * m).sum(dim=(-1, -2), keepdim=True) / denom
+        var = ((x - mean) ** 2 * m).sum(dim=(-1, -2), keepdim=True) / denom
+        std = torch.sqrt(var + 1e-6)
+
+        # Use +/-inf via large constants to avoid NaNs when all-masked.
+        x_min = (x + (1.0 - m) * self.inf).amin(dim=(-1, -2))
+        x_max = (x + (1.0 - m) * (-self.inf)).amax(dim=(-1, -2))
+
+        # Reduce to scalars (avg over batch + heads)
+        return mean.mean(), std.mean(), x_min.mean(), x_max.mean()
 
     def norm_component(self,x, mask):
         """
@@ -357,12 +393,16 @@ class InvariantGaussianAttention(nn.Module):
         k = self.linear_k(s).view(B, N, self.no_heads, -1).transpose(1, 2)
         v = self.linear_v(s).view(B, N, self.no_heads, -1).transpose(1, 2)
 
-        logits =torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(self.c_hidden)
+        logits = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(self.c_hidden)
         # logits=self.norm_component(logits, mask)
 
         # Gamma for scalar QK
        # gamma_scalar = F.softplus(self.scalar_qk_weights).view(1, -1, 1, 1)
-        logits = logits  #gamma_scalar *
+        logits = logits  # gamma_scalar *
+
+        # Keep a handle to scalar(+pair) logits before adding geometry. We will use this
+        # for debug stats without the padding mask (-inf) contaminating reductions.
+        logits_scalar_pair = logits
 
         # Vis Cache: save scalar QK (already weighted by gamma)
         scalar_qk = logits.clone() if self.enable_vis else None
@@ -387,7 +427,12 @@ class InvariantGaussianAttention(nn.Module):
         # -------------------------------------------------------
         def parse_gaussian_lite(feat):
             raw = feat.view(B, N, self.no_heads, self.no_qk_gaussians, 6)
-            return raw[..., :3], raw[..., 3:]
+            u_raw = raw[..., :3]
+            s_raw = raw[..., 3:]
+            # Keep deltas bounded; the ellipsoid scale carries the true metric.
+            u = torch.tanh(u_raw) * self.u_max
+            s_log_delta = torch.tanh(s_raw) * self.log_scale_max
+            return u, s_log_delta
 
         q_off_delta, q_s_delta = parse_gaussian_lite(self.linear_q_gaussian(s))
         k_off_delta, k_s_delta = parse_gaussian_lite(self.linear_k_gaussian(s))
@@ -405,12 +450,14 @@ class InvariantGaussianAttention(nn.Module):
         delta_mu = q_mu.unsqueeze(3) - k_mu.unsqueeze(2)
         sigma_sum = q_sigma.unsqueeze(3) + k_sigma.unsqueeze(2)
 
-        # Kernel
-        overlap_scores = fused_gaussian_overlap_score(delta_mu, sigma_sum)
+        # Kernel (Gaussian log-likelihood up to an additive constant):
+        #   log p(delta | Sigma) = -0.5 * d^T Sigma^{-1} d - 0.5 * log|Sigma| + const
+        # Using the same robust implicit-Cholesky logic as our loss code.
+        dist_sq, log_det = compute_robust_nll_components(delta_mu, sigma_sum)
+        overlap_scores = -0.5 * dist_sq - 0.5 * log_det
 
-        # Aggregation & Weighting
-        # scale_factor = 1.0 / math.sqrt(self.no_qk_gaussians)
-        attn_bias_geo = overlap_scores.sum(dim=-1)# * scale_factor
+        # Aggregate across Gaussian points per head
+        attn_bias_geo = overlap_scores.sum(dim=-1)
 
         # Z-Score Norm (Preserved)
         # geo = attn_bias_geo
@@ -448,6 +495,8 @@ class InvariantGaussianAttention(nn.Module):
         # Combine: Logits = Scalar + Pair + Gamma * Geometric
         logits = logits + G_geo
 
+        logits_pre_mask = logits
+
         # Vis Cache: save logits after adding geo (before row norm)
         logits_after = logits.clone() if self.enable_vis else None
 
@@ -464,6 +513,73 @@ class InvariantGaussianAttention(nn.Module):
             logits = logits + (1.0 - mask_2d.unsqueeze(1)) * -self.inf
 
         weights = self.softmax(logits)
+
+        # -------------------------------------------------------
+        # Debug stats (numeric stability + saturation diagnostics)
+        # -------------------------------------------------------
+        if mask is not None:
+            mask_2d = mask.unsqueeze(1).unsqueeze(2) * mask.unsqueeze(1).unsqueeze(3)  # [B,1,N,N]
+        else:
+            mask_2d = torch.ones((B, 1, N, N), device=logits.device, dtype=logits.dtype)
+
+        try:
+            # Scalar(+pair) logits stats (before geo is added), without padding-mask -inf.
+            scalar_logits = logits_scalar_pair.detach()
+            s_mean, s_std, s_min, s_max = self._masked_mean_std_min_max(scalar_logits.detach(), mask_2d)
+            g_mean, g_std, g_min, g_max = self._masked_mean_std_min_max(G_geo.detach(), mask_2d)
+
+            # Raw geo term stats (pre affine a*G + b): attn_bias_geo is [B,H,N,N]
+            gr_mean, gr_std, gr_min, gr_max = self._masked_mean_std_min_max(attn_bias_geo.detach(), mask_2d)
+
+            # Dist / logdet summaries (use means over valid entries; these tensors are large so keep it light)
+            # dist_sq/log_det: [B,H,N,N,P,3]?? -> after compute_robust_nll_components: [B,H,N,N,P,3]? actually [B,H,N,N,P,3] collapsed? compute returns [...,3]? No: it returns [B,H,N,N,P,3]? then summed? Here dist_sq/log_det are [B,H,N,N,P,3]? We'll reduce safely.
+            ds = dist_sq.detach()
+            ld = log_det.detach()
+            # Reduce over last dims to get [B,H,N,N]
+            while ds.dim() > 4:
+                ds = ds.mean(dim=-1)
+            while ld.dim() > 4:
+                ld = ld.mean(dim=-1)
+            ds_mean, ds_std, ds_min, ds_max = self._masked_mean_std_min_max(ds, mask_2d)
+            ld_mean, ld_std, ld_min, ld_max = self._masked_mean_std_min_max(ld, mask_2d)
+
+            # Softmax saturation: max prob per query row
+            wmax = weights.detach().max(dim=-1).values  # [B,H,N]
+            qmask = mask[:, None, :].to(wmax.dtype) if mask is not None else torch.ones_like(wmax)
+            denom_q = qmask.sum(dim=-1).clamp_min(1.0)  # [B,1]
+            wmax_mean = (wmax * qmask).sum(dim=-1) / denom_q
+            sat_frac = ((wmax > 0.9).to(wmax.dtype) * qmask).sum(dim=-1) / denom_q
+
+            self._last_debug = {
+                "scalar_mean": s_mean,
+                "scalar_std": s_std,
+                "scalar_min": s_min,
+                "scalar_max": s_max,
+                "geo_scaled_mean": g_mean,
+                "geo_scaled_std": g_std,
+                "geo_scaled_min": g_min,
+                "geo_scaled_max": g_max,
+                "geo_raw_mean": gr_mean,
+                "geo_raw_std": gr_std,
+                "geo_raw_min": gr_min,
+                "geo_raw_max": gr_max,
+                "dist_sq_mean": ds_mean,
+                "dist_sq_std": ds_std,
+                "dist_sq_min": ds_min,
+                "dist_sq_max": ds_max,
+                "log_det_mean": ld_mean,
+                "log_det_std": ld_std,
+                "log_det_min": ld_min,
+                "log_det_max": ld_max,
+                "wmax_mean": wmax_mean.mean(),
+                "wmax_sat_frac": sat_frac.mean(),
+                "geo_a_mean": a.detach().mean(),
+                "geo_a_max": a.detach().max(),
+                "geo_b_mean": b.detach().mean(),
+            }
+        except Exception:
+            # Don't crash training due to debug logging.
+            self._last_debug = None
 
         # [Optional] Visualization
         if self.enable_vis and self.training:
@@ -818,10 +934,12 @@ class InvariantGaussianAttention(nn.Module):
 #             print(f"[IGA Vis Layer {self.layer_idx}] Warning: Failed to visualize attention: {e}")
 
 class GaussianUpdateBlock(nn.Module):
-    def __init__(self, c_s):
+    def __init__(self, c_s, update_gaussian: bool = True):
         super().__init__()
-        # 输出 15 维增量
-        self.linear = Linear(c_s, 12, init="final")
+        # 6D: backbone (qvec3 + t3); 12D adds (alpha3 + log_scale3)
+        self.update_gaussian = bool(update_gaussian)
+        out_dim = 12 if self.update_gaussian else 6
+        self.linear = Linear(c_s, out_dim, init="final")
 
     def forward(self, s, gaussian_rigid, mask=None):
         """
@@ -831,7 +949,7 @@ class GaussianUpdateBlock(nn.Module):
             mask: [B, N] Update Mask (1=Update, 0=Freeze)
         """
         # 1. 预测增量
-        updates = self.linear(s)  # [B, N, 6]
+        updates = self.linear(s)
 
         # 2. 【核心修改】应用 Mask
         # Context 区域 (mask=0) 的增量被强制为 0 -> 保持静止

@@ -31,7 +31,7 @@ import torch.nn.functional as F
 
 from openfold.np.residue_constants import restype_name_to_atom14_names
 
-from models.flow_model import SideAtomsFlowModel,SideAtomsIGAModel
+from models.flow_model import FlowModel,FlowModelIGA
 from models.HGF_flow_model_structured import HierarchicalGaussianFieldModel_Generate
 from models.shattetnion.ShDecoderSidechain import SHSidechainDecoder, DynamicKSidechainDecoder, assemble_atom14_with_CA, \
     SHGeoResHead
@@ -142,7 +142,7 @@ class FlowModule(LightningModule):
         # self.PredHead.requires_grad_(False)  # 冻结权重
         # self.PredHead.eval()  # 关掉 Dropout/BN 的统计更新
 
-        self.model = HierarchicalGaussianFieldModel_Generate(cfg.model)
+        self.model = FlowModelIGA(cfg.model)
         #self.model =SideAtomsFlowModel_backup(cfg.model)
         # mw='/home/junyu/project/protein-frame-flow-u/experiments/ckpt/se3-fm_sh/pdb_seperated_Rm0_t0/2025-08-25_00-01-29/last.ckpt'
         # _load_submodule_from_ckpt(self.model, mw, lightning_key="state_dict", source_prefix=None)
@@ -257,23 +257,208 @@ class FlowModule(LightningModule):
 
 
 
-    def model_step(self, batch: Any):
+    # def model_step(self, batch: Any):
+    #
+    #     training_cfg = self._exp_cfg.training
+    #
+    #     noisy_batch = self.interpolant.corrupt_batch(batch)
+    #
+    #     loss_mask = noisy_batch['res_mask'] * noisy_batch['diffuse_mask']
+    #     if torch.any(torch.sum(loss_mask, dim=-1) < 1):
+    #         raise ValueError('Empty batch encountered')
+    #
+    #
+    #     model_output=self.model(noisy_batch,step=self.global_step,total_steps=100000)
+    #
+    #     result,aux=LinearBridgeLoss(model_output,batch,noisy_batch,self._exp_cfg,self.model.FrameBuilder)
+    #
+    #
+    #     return result,aux
 
+    def model_step(self, noisy_batch: Any):
         training_cfg = self._exp_cfg.training
-
-        noisy_batch = self.interpolant.corrupt_batch(batch)
-
         loss_mask = noisy_batch['res_mask'] * noisy_batch['diffuse_mask']
         if torch.any(torch.sum(loss_mask, dim=-1) < 1):
             raise ValueError('Empty batch encountered')
+        num_batch, num_res = loss_mask.shape
 
+        # Ground truth labels
+        gt_trans_1 = noisy_batch['trans_1']
+        gt_rotmats_1 = noisy_batch['rotmats_1']
+        rotmats_t = noisy_batch['rotmats_t']
+        gt_rot_vf = so3_utils.calc_rot_vf(
+            rotmats_t, gt_rotmats_1.type(torch.float32))
+        if torch.any(torch.isnan(gt_rot_vf)):
+            raise ValueError('NaN encountered in gt_rot_vf')
+        gt_bb_atoms = all_atom.to_atom37(gt_trans_1, gt_rotmats_1)[:, :, :3]
 
-        model_output=self.model(noisy_batch,step=self.global_step,total_steps=100000)
+        # Timestep used for normalization.
+        r3_t = noisy_batch['r3_t']
+        so3_t = noisy_batch['so3_t']
+        # Keep normalization tensors on the same device/dtype to avoid subtle CPU/GPU issues.
+        t_clip = torch.tensor(
+            training_cfg.t_normalize_clip, device=r3_t.device, dtype=r3_t.dtype
+        )
+        r3_norm_scale = 1 - torch.min(r3_t[..., None], t_clip)
+        so3_norm_scale = 1 - torch.min(so3_t[..., None], t_clip)
 
-        result=LinearBridgeLoss(model_output,batch,self._exp_cfg,self.model.FrameBuilder)
+        # Model output predictions.
+        model_output = self.model(noisy_batch)
+        pred_trans_1 = model_output['pred_trans']
+        pred_rotmats_1 = model_output['pred_rotmats']
 
+        # Optional IGA debug stats (rank0 only). These help diagnose geometry-logit saturation/spikes.
+        if "iga_debug" in model_output:
+            is_rank0 = (not dist.is_available()) or (not dist.is_initialized()) or (dist.get_rank() == 0)
+            if is_rank0:
+                dbg = model_output["iga_debug"] or {}
+                # Always log a few global stability indicators.
+                for k in ("global/geo_scaled_absmax", "global/wmax_sat_frac", "global/log_det_min"):
+                    if k in dbg and torch.is_tensor(dbg[k]):
+                        self._log_scalar(
+                            f"debug/iga/{k}",
+                            dbg[k],
+                            on_step=True,
+                            on_epoch=False,
+                            prog_bar=False,
+                            batch_size=num_batch,
+                            sync_dist=False,
+                            rank_zero_only=True,
+                        )
 
-        return result
+                # Log layer snapshots less frequently to reduce overhead.
+                dbg_interval = getattr(training_cfg, "iga_debug_interval", 10)
+                if (self.global_step % int(dbg_interval)) == 0:
+                    for k, v in dbg.items():
+                        if k.startswith("global/"):
+                            continue
+                        if torch.is_tensor(v):
+                            self._log_scalar(
+                                f"debug/iga/{k}",
+                                v,
+                                on_step=True,
+                                on_epoch=False,
+                                prog_bar=False,
+                                batch_size=num_batch,
+                                sync_dist=False,
+                                rank_zero_only=True,
+                            )
+        pred_rots_vf = so3_utils.calc_rot_vf(rotmats_t, pred_rotmats_1)
+        if torch.any(torch.isnan(pred_rots_vf)):
+            raise ValueError('NaN encountered in pred_rots_vf')
+
+        # Backbone atom loss
+        pred_bb_atoms = all_atom.to_atom37(pred_trans_1, pred_rotmats_1)[:, :, :3]
+        gt_bb_atoms *= training_cfg.bb_atom_scale / r3_norm_scale[..., None]
+        pred_bb_atoms *= training_cfg.bb_atom_scale / r3_norm_scale[..., None]
+        # denom for vector-field losses (x,y,z per residue)
+        loss_denom = torch.sum(loss_mask, dim=-1) * 3
+        # denom for backbone atom coords (N,CA,C) = 3 atoms * 3 coords per residue
+        bb_loss_denom = torch.sum(loss_mask, dim=-1) * 9
+        bb_atom_loss = torch.sum(
+            (gt_bb_atoms - pred_bb_atoms) ** 2 * loss_mask[..., None, None],
+            dim=(-1, -2, -3)
+        ) / bb_loss_denom.clamp_min(1e-8)
+
+        # Translation VF loss
+        trans_error = (gt_trans_1 - pred_trans_1) / r3_norm_scale * training_cfg.trans_scale
+        trans_loss = training_cfg.translation_loss_weight * torch.sum(
+            trans_error ** 2 * loss_mask[..., None],
+            dim=(-1, -2)
+        ) / loss_denom
+        trans_loss = torch.clamp(trans_loss, max=5)
+
+        # Rotation VF loss
+        rots_vf_error = (gt_rot_vf - pred_rots_vf) / so3_norm_scale
+        rots_vf_loss = training_cfg.rotation_loss_weights * torch.sum(
+            rots_vf_error ** 2 * loss_mask[..., None],
+            dim=(-1, -2)
+        ) / loss_denom
+
+        # Pairwise distance loss
+        gt_flat_atoms = gt_bb_atoms.reshape([num_batch, num_res * 3, 3])
+        gt_pair_dists = torch.linalg.norm(
+            gt_flat_atoms[:, :, None, :] - gt_flat_atoms[:, None, :, :], dim=-1)
+        pred_flat_atoms = pred_bb_atoms.reshape([num_batch, num_res * 3, 3])
+        pred_pair_dists = torch.linalg.norm(
+            pred_flat_atoms[:, :, None, :] - pred_flat_atoms[:, None, :, :], dim=-1)
+
+        flat_loss_mask = torch.tile(loss_mask[:, :, None], (1, 1, 3))
+        flat_loss_mask = flat_loss_mask.reshape([num_batch, num_res * 3])
+        flat_res_mask = torch.tile(loss_mask[:, :, None], (1, 1, 3))
+        flat_res_mask = flat_res_mask.reshape([num_batch, num_res * 3])
+
+        gt_pair_dists = gt_pair_dists * flat_loss_mask[..., None]
+        pred_pair_dists = pred_pair_dists * flat_loss_mask[..., None]
+        pair_dist_mask = flat_loss_mask[..., None] * flat_res_mask[:, None, :]
+
+        dist_mat_loss = torch.sum(
+            (gt_pair_dists - pred_pair_dists) ** 2 * pair_dist_mask,
+            dim=(1, 2))
+        dist_mat_loss /= (torch.sum(pair_dist_mask, dim=(1, 2)) + 1)
+
+        se3_vf_loss = trans_loss + rots_vf_loss
+        auxiliary_loss = (
+                bb_atom_loss * training_cfg.aux_loss_use_bb_loss
+                + dist_mat_loss * training_cfg.aux_loss_use_pair_loss
+        )
+        auxiliary_loss *= (
+                (r3_t[:, 0] > training_cfg.aux_loss_t_pass)
+                & (so3_t[:, 0] > training_cfg.aux_loss_t_pass)
+        )
+        auxiliary_loss *= self._exp_cfg.training.aux_loss_weight
+        auxiliary_loss = torch.clamp(auxiliary_loss, max=5)
+
+        se3_vf_loss += auxiliary_loss
+        aa_loss = None
+        aa_recovery = None
+        aa_perplexity = None
+        if "aa_logits" in model_output:
+            aa_logits = model_output["aa_logits"]
+            if "aatype" in noisy_batch:
+                aa_target = noisy_batch["aatype"].long()
+                aa_loss_per = F.cross_entropy(
+                    aa_logits.transpose(1, 2),
+                    aa_target,
+                    reduction="none",
+                )
+                aa_loss = torch.sum(aa_loss_per * loss_mask, dim=-1) / (
+                    torch.sum(loss_mask, dim=-1) + 1e-8
+                )
+                aa_recovery = type_top1_acc(aa_logits, aa_target, node_mask=loss_mask)
+                _, aa_perplexity = compute_CE_perplexity(aa_logits, aa_target, mask=loss_mask)
+            else:
+                aa_loss = torch.zeros_like(loss_mask.sum(dim=-1))
+            aa_weight = getattr(training_cfg, "aa_loss_weight", 1.0)
+            se3_vf_loss = se3_vf_loss + aa_weight * aa_loss + aa_logits.sum() * 0.0
+
+        ellipsoid_local_mean_loss = None
+        if "ellipsoid_alpha" in model_output and "ellipsoid_scaling" in model_output:
+            alpha_pred = model_output["ellipsoid_alpha"]
+            scaling_pred = model_output["ellipsoid_scaling"]
+            if "local_mean_1" in noisy_batch:
+                local_mean_pred = alpha_pred * scaling_pred
+                local_mean_gt = noisy_batch["local_mean_1"]
+                mse = (local_mean_pred - local_mean_gt) ** 2
+                ellipsoid_local_mean_loss = torch.sum(
+                    mse * loss_mask[..., None], dim=(-1, -2)
+                ) / (torch.sum(loss_mask, dim=-1) + 1e-8)
+                ell_weight = getattr(training_cfg, "ellipsoid_local_mean_loss_weight", 0.0)
+                se3_vf_loss = se3_vf_loss + ell_weight * ellipsoid_local_mean_loss
+            else:
+                se3_vf_loss = se3_vf_loss + (alpha_pred.sum() + scaling_pred.sum()) * 0.0
+        if torch.any(torch.isnan(se3_vf_loss)):
+            raise ValueError('NaN loss encountered')
+        return {
+            "trans_loss": trans_loss,
+            "auxiliary_loss": auxiliary_loss,
+            "rots_vf_loss": rots_vf_loss,
+            "se3_vf_loss": se3_vf_loss,
+            "aa_loss": aa_loss,
+            "aa_recovery": aa_recovery,
+            "aa_perplexity": aa_perplexity,
+            "ellipsoid_local_mean_loss": ellipsoid_local_mean_loss,
+        }
 
 
 
@@ -281,230 +466,55 @@ class FlowModule(LightningModule):
 
     def validation_step(self, batch: Any, batch_idx: int):
         res_mask = batch['res_mask']
+        self.interpolant.set_device(res_mask.device)
+        num_batch, num_res = res_mask.shape
+        diffuse_mask = batch['diffuse_mask']
         csv_idx = batch['csv_idx']
-        step_start_time = time.time()
+        atom37_traj, _, _ = self.interpolant.sample(
+            num_batch,
+            num_res,
+            self.model,
+            trans_1=batch['trans_1'],
+            rotmats_1=batch['rotmats_1'],
+            diffuse_mask=diffuse_mask,
+            chain_idx=batch['chain_idx'],
+            res_idx=batch['res_idx'],
+        )
+        samples = atom37_traj[-1].numpy()
+        batch_metrics = []
+        for i in range(num_batch):
+            sample_dir = os.path.join(
+                self.checkpoint_dir,
+                f'sample_{csv_idx[i].item()}_idx_{batch_idx}_len_{num_res}'
+            )
+            os.makedirs(sample_dir, exist_ok=True)
 
-        self.interpolant.set_device(batch['res_mask'].device)
-        atom_mse_per_example = None
+            if self.global_rank != 0:
+                continue
 
-        # ====================================================================
-        # 计算 loss（根据 task 类型）
-        # ====================================================================
-        save_samples = getattr(self._exp_cfg, 'save_val_samples', False)
-        outs = None
-        noisy_batch = None
-
-        if self._exp_cfg.task == 'diffusion' or self._exp_cfg.task == 'shdiffusion':
-            batch_losses = self.model_step_shdiffusion(batch)
-            if self._exp_cfg.task == 'shdiffusion':
-                atom_mse_per_example = batch_losses.pop('atom_mse_per_example', None)
-        else:
-            if self._exp_cfg.task == 'allatoms':
-                batch_losses = self.model_step_shdiffusion(batch)
-                if self._exp_cfg.task == 'shdiffusion':
-                    atom_mse_per_example = batch_losses.pop('atom_mse_per_example', None)
-
-            elif self._exp_cfg.task in ('fbb',):
-                # 如果需要保存样本，则获取模型输出
-                if save_samples:
-                    batch_losses, outs, noisy_batch = self.model_step_fbb(batch, prob=0, return_outputs=True)
-                else:
-                    batch_losses,_ = self.model_step_fbb(batch, prob=0, return_outputs=False)
-
-            elif self._exp_cfg.task in ('shfbb',):
-                batch_losses = self.model_step_shfbb(batch, prob=1)
-
-            elif self._exp_cfg.task in ('sh_to_atoms',):
-                batch_losses = self.model_step_decoder(batch)
-
-                # 计算per-atom RMSD统计
-                with torch.no_grad():
-                    # 使用与训练相同的tau配置
-                    tau = self._exp_cfg.training.get('sh_tau_threshold', 0.0)
-                    # if tau > 0:
-                    #     tau_mask = batch['density_mask'] * (torch.abs(batch['normalize_density']) > tau)
-                    #     sh = batch['normalize_density'] * tau_mask
-                    # else:
-                    #     sh = batch['normalize_density'] * batch['density_mask']
-                    batch['r3_t'] = torch.ones_like(batch['res_mask'])
-                    logits, atoms14_pred = self.model(batch)  #, node_mask=batch['res_mask']
-
-                    atom14_gt = batch['atoms14_local']
-                    atom14_mask = batch['atom14_gt_exists']
-
-                    # 整体RMSD
-                    diff = (atoms14_pred - atom14_gt) ** 2 * atom14_mask.unsqueeze(-1)
-                    rmsd = torch.sqrt(diff.sum() / (atom14_mask.sum() + 1e-6))
-                    batch_losses['atom14_rmsd'] = rmsd
-
-                    # 按原子位置统计 (0-13: N, CA, C, O, CB, ...)
-                    for atom_idx in range(14):
-                        mask_i = atom14_mask[:, :, atom_idx]  # [B, N]
-                        if mask_i.sum() > 0:
-                            diff_i = (atoms14_pred[:, :, atom_idx] - atom14_gt[:, :, atom_idx]) ** 2  # [B, N, 3]
-                            diff_i = diff_i * mask_i.unsqueeze(-1)  # [B, N, 3]
-                            rmsd_i = torch.sqrt(diff_i.sum() / (mask_i.sum() + 1e-6))
-                            batch_losses[f'atom{atom_idx}_rmsd'] = rmsd_i
-
-                    # 侧链RMSD (atom 4-13)
-                    sidechain_mask = atom14_mask.clone()
-                    sidechain_mask[:, :, :4] = 0
-                    if sidechain_mask.sum() > 0:
-                        sc_diff = (atoms14_pred - atom14_gt) ** 2 * sidechain_mask.unsqueeze(-1)
-                        sc_rmsd = torch.sqrt(sc_diff.sum() / (sidechain_mask.sum() + 1e-6))
-                        batch_losses['sidechain_rmsd'] = sc_rmsd
-
-            else:
-                batch_losses = self.model_step_fbb_backup(batch, prob=1)
-        if self._exp_cfg.task != 'shfbb_infer':
-
-            num_batch = res_mask.shape[0]
-            total_losses = {
-                k: torch.mean(v) for k, v in batch_losses.items()
-            }
-            if self._exp_cfg.task == 'shdiffusion' and atom_mse_per_example is not None and 't' in batch:
-                stratified_losses = mu.t_stratified_mean_loss(
-                    batch['t'].detach().cpu(),
-                    atom_mse_per_example.detach().cpu(),
-                    loss_name='atom_mse'
+            # Write out sample to PDB file
+            final_pos = samples[i]
+            saved_path = au.write_prot_to_pdb(
+                final_pos,
+                os.path.join(sample_dir, 'sample.pdb'),
+                no_indexing=True
+            )
+            if isinstance(self.logger, WandbLogger):
+                self.validation_epoch_samples.append(
+                    [saved_path, self.global_step, wandb.Molecule(saved_path)]
                 )
-                for k, v in stratified_losses.items():
-                    self._log_scalar(
-                        f"valid/{k}", v, on_step=False, on_epoch=True, prog_bar=False, batch_size=num_batch
-                    )
-            for k, v in total_losses.items():
-                self._log_scalar(
-                    f"valid/{k}", v.detach().item(), on_step=False, on_epoch=True, prog_bar=False, batch_size=num_batch)
 
-            # Losses to track. Stratified across t.
-            if self._exp_cfg.task == 'diffusion':
-                for loss_name, loss_dict in batch_losses.items():
+            mdtraj_metrics = metrics.calc_mdtraj_metrics(saved_path)
 
-                    stratified_losses = mu.t_stratified_mean_loss(
-                        batch['t'], loss_dict, loss_name=loss_name)
-                    for k, v in stratified_losses.items():
-                        self._log_scalar(
-                            f"valid/{k}", v, on_step=False, on_epoch=True, prog_bar=False, batch_size=num_batch)
-                    # Training throughput
-                    scaffold_percent = torch.mean(batch['diffuse_mask'].float()).item()
-                    self._log_scalar(
-                        "valid/scaffolding_percent",
-                        scaffold_percent, on_step=False, on_epoch=True, prog_bar=False, batch_size=num_batch)
-                    motif_mask = 1 - batch['diffuse_mask'].float()
-                    num_motif_res = torch.sum(motif_mask, dim=-1)
-                    self._log_scalar(
-                        "valid/motif_size",
-                        torch.mean(num_motif_res).item(), on_step=False, on_epoch=True, prog_bar=False, batch_size=num_batch)
-                    self._log_scalar(
-                        "valid/length", batch['res_mask'].shape[1], on_step=False, on_epoch=True, prog_bar=False, batch_size=num_batch)
-                    self._log_scalar(
-                        "valid/batch_size", num_batch, on_step=False, on_epoch=True, prog_bar=False)
-                    step_time = time.time() - step_start_time
-                    self._log_scalar(
-                        "valid/examples_per_second", num_batch / step_time, on_step=False, on_epoch=True, prog_bar=False)
-                    val_loss = total_losses['se3_vf_loss']
-                    self._log_scalar(
-                        "valid/loss", val_loss, on_step=False, on_epoch=True, prog_bar=False, batch_size=num_batch)
-                num_batch, num_res = res_mask.shape
+            ca_idx = residue_constants.atom_order['CA']
+            ca_ca_metrics = metrics.calc_ca_ca_metrics(final_pos[:, ca_idx])
+            metrics_dict = mdtraj_metrics | ca_ca_metrics
+            batch_metrics.append(metrics_dict)
+            for k, v in metrics_dict.items():
+                self._log_scalar(f"valid/{k}", v, on_step=False, on_epoch=True, prog_bar=False, batch_size=1)
 
-                gt_all_atoms = self.frames(batch['rotmats_1'], batch['trans_1'],
-                                           batch['chain_idx']).detach().cpu().numpy()
-                # gt__atoms = all_atom.transrot_to_atom37( list(zip(batch['trans_1'], batch['rotmats_1'])),batch['res_mask']).detach().cpu().numpy()
-
-                samples = pred_bb_atoms.detach().cpu().numpy()
-                batch_metrics = []
-                for i in range(num_batch):
-                    sample_dir = os.path.join(
-                        self.checkpoint_dir,
-                        f'sample_{csv_idx[i].item()}_idx_{batch_idx}_len_{num_res}'
-                    )
-                    os.makedirs(sample_dir, exist_ok=True)
-
-                    # Write out sample to PDB file
-                    final_pos = samples[i]
-                    # saved_path = au.write_prot_to_pdb(
-                    #     final_pos,
-                    #     os.path.join(sample_dir, 'sample.pdb'),
-                    #     no_indexing=True
-                    # )
-
-                    saved_path = os.path.join(sample_dir, 'sample.pdb')
-
-                    save_4pdb(final_pos.reshape(-1, 3), os.path.join(sample_dir, 'sample.pdb'))
-                    # save_4pdb(final_pos[..., [0,1,2,4], :].reshape(-1, 3), os.path.join(sample_dir, 'final_pos.pdb'))
-                    save_4pdb(gt_all_atoms.reshape(-1, 3), os.path.join(sample_dir, 'backbone.pdb'))
-                    save_4pdb(batch['backbone'].reshape(-1, 3).detach().cpu().numpy(),
-                              os.path.join(sample_dir, 'backbone_4ATOMS.pdb'))
-
-                    # _ = au.write_prot_to_pdb(
-                    #     gt_all_atoms[i],
-                    #     os.path.join(sample_dir, 'gt.pdb'),
-                    #     no_indexing=True
-                    # )
-
-                    # _ = au.write_prot_to_pdb(
-                    #     gt__atoms[i],
-                    #     os.path.join(sample_dir, 'gt_transrot.pdb'),
-                    #     no_indexing=True
-                    # )
-
-                    if isinstance(self.logger, WandbLogger):
-                        self.validation_epoch_samples.append(
-                            [saved_path, self.global_step, wandb.Molecule(saved_path)]
-                        )
-
-                    mdtraj_metrics = metrics.calc_mdtraj_metrics(saved_path)
-                    ca_idx = residue_constants.atom_order['CA']
-                    ca_ca_metrics = metrics.calc_ca_ca_metrics(final_pos[:, ca_idx])
-                    batch_metrics.append((mdtraj_metrics | ca_ca_metrics))
-
-                batch_metrics = pd.DataFrame(batch_metrics)
-
-                self.validation_epoch_metrics.append(batch_metrics)
-
-            elif self._exp_cfg.task in ('aatype', 'SHdecode', 'shfbb', 'fbb', 'sh_to_atoms'):
-                batch_losses_fixed = {}
-                for k, v in batch_losses.items():
-                    if hasattr(v, 'item'):  # 如果是tensor
-                        batch_losses_fixed[k] = [v.item()]
-                    else:  # 如果已经是标量
-                        batch_losses_fixed[k] = [v]
-
-                if 'speed_loss' in total_losses:
-                    self._log_scalar(
-                        'valid/speed_loss',
-                        total_losses['speed_loss'],
-                        on_step=False,
-                        on_epoch=True,
-                        prog_bar=False,
-                        batch_size=num_batch,
-                    )
-                if 'speed_mae' in total_losses:
-                    self._log_scalar(
-                        'valid/speed_mae',
-                        total_losses['speed_mae'],
-                        on_step=False,
-                        on_epoch=True,
-                        prog_bar=False,
-                        batch_size=num_batch,
-                    )
-                self.validation_epoch_metrics.append(pd.DataFrame(batch_losses_fixed))
-
-                # ====================================================================
-                # 【新增】保存验证样本（PDB + FASTA）
-                # ====================================================================
-                if save_samples and outs is not None and noisy_batch is not None:
-                    self._save_validation_samples(batch, outs, noisy_batch)
-
-        if self._exp_cfg.task == 'shfbb':
-            try:
-                if self._val_ref_batch is not None:
-                    self._export_val_sample(self._val_ref_batch)
-            except Exception as exc:
-                self._print_logger.warning(f"Failed to export validation sample: {exc}")
-            finally:
-                self._val_ref_batch = None
-            self.validation_epoch_metrics.clear()
+        batch_metrics = pd.DataFrame(batch_metrics)
+        self.validation_epoch_metrics.append(batch_metrics)
 
     def _save_validation_samples(self, batch, outs, noisy_batch):
         """保存验证样本的 PDB 和 FASTA 文件"""
@@ -695,109 +705,74 @@ class FlowModule(LightningModule):
 
     def training_step(self, batch: Any, stage: int):
         step_start_time = time.time()
-
         self.interpolant.set_device(batch['res_mask'].device)
-        atom_mse_per_example = None
-        if self._exp_cfg.task == 'shdiffusion':
-
-            batch_losses = self.model_step_shdiffusion(batch)
-            if self._exp_cfg.task == 'shdiffusion':
-                atom_mse_per_example = batch_losses.pop('atom_mse_per_example', None)
-        elif self._exp_cfg.task in ('hallucination'):
-
-            batch_losses = self.model_step(batch)
-
-            atom_mse_per_example = batch_losses.pop('atom_mse_per_example', None)
-        elif self._exp_cfg.task in ('allatoms'):
-
-            batch_losses = self.model_step_allatoms(batch)
-
-            atom_mse_per_example = batch_losses.pop('atom_mse_per_example', None)
-
-        elif self._exp_cfg.task in ('fbb',):
-            batch_losses = self.model_step_fbb(batch,prob=0)
-        elif self._exp_cfg.task in ('shfbb',):
-            batch_losses = self.model_step_shfbb(batch,prob=1)
-
-        elif self._exp_cfg.task in ('sh_to_atoms',):
-            batch_losses = self.model_step_decoder(batch)
-
-        else:
-            batch_losses = self.model_step_fbb_backup(batch)
-        num_batch = batch['res_mask'].shape[0]
-        if atom_mse_per_example is not None and 't' in batch:
-            stratified_losses = mu.t_stratified_mean_loss(
-                batch['t'].detach().cpu(),
-                atom_mse_per_example.detach().cpu(),
-                loss_name='atom_mse'
-            )
-            for k, v in stratified_losses.items():
-                self._log_scalar(
-                    f"train/{k}", v, prog_bar=False, batch_size=num_batch
+        noisy_batch = self.interpolant.corrupt_batch(batch)
+        if self._interpolant_cfg.self_condition and random.random() > 0.5:
+            with torch.no_grad():
+                model_sc = self.model(noisy_batch)
+                noisy_batch['trans_sc'] = (
+                        model_sc['pred_trans'] * noisy_batch['diffuse_mask'][..., None]
+                        + noisy_batch['trans_1'] * (1 - noisy_batch['diffuse_mask'][..., None])
                 )
-
+        batch_losses = self.model_step(noisy_batch)
+        num_batch = batch_losses['trans_loss'].shape[0]
         total_losses = {
-            k: torch.mean(v) for k, v in batch_losses.items()
+            k: torch.mean(v) for k, v in batch_losses.items() if torch.is_tensor(v)
         }
+        for k, v in total_losses.items():
+            self._log_scalar(
+                f"train/{k}", v, prog_bar=False, batch_size=num_batch)
 
         # Losses to track. Stratified across t.
-        #
-        # for loss_name, loss_dict in batch_losses.items():
-        #
-        #     stratified_losses = mu.t_stratified_mean_loss(
-        #         torch.tensor(0.001), loss_dict, loss_name=loss_name)
-        #     for k,v in stratified_losses.items():
-        #         self._log_scalar(
-        #             f"train/{k}", v, prog_bar=False, batch_size=num_batch)
-
-        if self._exp_cfg.task == 'vae':
-            for k, v in total_losses.items():
+        so3_t = noisy_batch['so3_t'].reshape(-1)
+        self._log_scalar(
+            "train/so3_t",
+            np.mean(du.to_numpy(so3_t)),
+            prog_bar=False, batch_size=num_batch)
+        r3_t = noisy_batch['r3_t'].reshape(-1)
+        self._log_scalar(
+            "train/r3_t",
+            np.mean(du.to_numpy(r3_t)),
+            prog_bar=False, batch_size=num_batch)
+        for loss_name, loss_dict in batch_losses.items():
+            if not torch.is_tensor(loss_dict):
+                continue
+            if loss_dict.ndim == 0:
+                continue
+            if loss_name == 'rots_vf_loss':
+                batch_t = so3_t
+            else:
+                batch_t = r3_t
+            if loss_dict.shape[0] != batch_t.shape[0]:
+                continue
+            stratified_losses = mu.t_stratified_loss(
+                batch_t, loss_dict, loss_name=loss_name)
+            for k, v in stratified_losses.items():
                 self._log_scalar(
                     f"train/{k}", v, prog_bar=False, batch_size=num_batch)
-            # Training throughput
-            scaffold_percent = torch.mean(batch['diffuse_mask'].float()).item()
-            self._log_scalar(
-                "train/scaffolding_percent",
-                scaffold_percent, prog_bar=False, batch_size=num_batch)
-            motif_mask = 1 - batch['diffuse_mask'].float()
-            num_motif_res = torch.sum(motif_mask, dim=-1)
-            self._log_scalar(
-                "train/motif_size",
-                torch.mean(num_motif_res).item(), prog_bar=False, batch_size=num_batch)
-            self._log_scalar(
-                "train/length", batch['res_mask'].shape[1], prog_bar=False, batch_size=num_batch)
-            self._log_scalar(
-                "train/batch_size", num_batch, prog_bar=False)
-            step_time = time.time() - step_start_time
-            self._log_scalar(
-                "train/examples_per_second", num_batch / step_time)
-            train_loss = total_losses['se3_vf_loss']
-            self._log_scalar(
-                "train/loss", train_loss, batch_size=num_batch)
-        elif self._exp_cfg.task == 'aatype':
-            train_loss = total_losses['aaloss']
-            self._log_scalar(
-                "train/aaloss", train_loss, batch_size=num_batch)
-            self._log_scalar(
-                "train/aa_acc", total_losses['aa_acc'], batch_size=num_batch)
-        elif self._exp_cfg.task in ('SHdecode', 'shfbb', 'fbb', 'sh_to_atoms', 'shdiffusion'):
-            train_loss = total_losses['loss']
 
-            # 移除手动频率控制，让Lightning根据log_every_n_steps自动控制
-            if 'speed_loss' in total_losses:
-                self._log_scalar(
-                    "train/speed_loss",
-                    total_losses['speed_loss'],
-                    prog_bar=True,
-                    batch_size=num_batch,
-                )
-            for k, v in total_losses.items():
-                if k == 'speed_loss':
-                    continue
-                self._log_scalar(
-                    f"train/{k}", float(v.detach().cpu().item()), prog_bar=True, batch_size=num_batch)
-
+        # Training throughput
+        scaffold_percent = torch.mean(batch['diffuse_mask'].float()).item()
+        self._log_scalar(
+            "train/scaffolding_percent",
+            scaffold_percent, prog_bar=False, batch_size=num_batch)
+        motif_mask = 1 - batch['diffuse_mask'].float()
+        num_motif_res = torch.sum(motif_mask, dim=-1)
+        self._log_scalar(
+            "train/motif_size",
+            torch.mean(num_motif_res).item(), prog_bar=False, batch_size=num_batch)
+        self._log_scalar(
+            "train/length", batch['res_mask'].shape[1], prog_bar=False, batch_size=num_batch)
+        self._log_scalar(
+            "train/batch_size", num_batch, prog_bar=False)
+        step_time = time.time() - step_start_time
+        self._log_scalar(
+            "train/examples_per_second", num_batch / step_time)
+        train_loss = total_losses['se3_vf_loss']
+        self._log_scalar(
+            "train/loss", train_loss, batch_size=num_batch)
         return train_loss
+
     def configure_optimizers(self):
         return torch.optim.AdamW(
             params=self.model.parameters(),

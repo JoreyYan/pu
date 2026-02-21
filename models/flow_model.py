@@ -1132,10 +1132,31 @@ class FlowModelIGA(nn.Module):
         node_embed = init_node_embed * node_mask[..., None]
         edge_embed = init_edge_embed * edge_mask[..., None]
 
+        iga_debug = {}
+        # Track a few global diagnostics to correlate with loss spikes.
+        device = node_embed.device
+        geo_scaled_absmax_global = torch.zeros((), device=device)
+        wmax_sat_frac_global = torch.zeros((), device=device)
+        log_det_min_global = torch.full((), float("inf"), device=device)
+
         for b in range(self.ipa.num_blocks):
-            iga_out = self.trunk[f"iga_{b}"](s=node_embed, z=edge_embed, r=rigids_nm, mask=node_mask)
+            iga_mod = self.trunk[f"iga_{b}"]
+            iga_out = iga_mod(s=node_embed, z=edge_embed, r=rigids_nm, mask=node_mask)
             iga_out = iga_out * node_mask[..., None]
             node_embed = self.trunk[f"iga_ln_{b}"](node_embed + iga_out)
+
+            dbg = iga_mod.get_last_debug()
+            if dbg is not None:
+                # Layer-level snapshots (first + last) + global extremes.
+                geo_abs = torch.maximum(dbg["geo_scaled_max"].abs(), dbg["geo_scaled_min"].abs())
+                geo_scaled_absmax_global = torch.maximum(geo_scaled_absmax_global, geo_abs)
+                wmax_sat_frac_global = torch.maximum(wmax_sat_frac_global, dbg["wmax_sat_frac"])
+                log_det_min_global = torch.minimum(log_det_min_global, dbg["log_det_min"])
+
+                if b == 0 or b == self.ipa.num_blocks - 1:
+                    prefix = f"l{b}"
+                    for k, v in dbg.items():
+                        iga_debug[f"{prefix}/{k}"] = v
 
             seq_tfmr_out = self.trunk[f"seq_tfmr_{b}"](
                 node_embed, src_key_padding_mask=(1 - node_mask).to(torch.bool)
@@ -1155,4 +1176,10 @@ class FlowModelIGA(nn.Module):
         return {
             'pred_trans': rigids_ang.get_trans(),
             'pred_rotmats': rigids_ang.get_rots().get_rot_mats(),
+            'iga_debug': {
+                **iga_debug,
+                "global/geo_scaled_absmax": geo_scaled_absmax_global,
+                "global/wmax_sat_frac": wmax_sat_frac_global,
+                "global/log_det_min": log_det_min_global,
+            },
         }
