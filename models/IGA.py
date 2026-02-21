@@ -252,6 +252,7 @@ class InvariantGaussianAttention(nn.Module):
             no_qk_gaussians: int,
             no_v_points: int,
             inf: float = 1e5,
+            logdet_min: float = -20.0,
             enable_vis: bool = False,
             vis_interval: int = 100,
             vis_dir: str = "./attention_vis",
@@ -265,6 +266,7 @@ class InvariantGaussianAttention(nn.Module):
         self.no_qk_gaussians = no_qk_gaussians
         self.no_v_points = no_v_points
         self.inf = inf
+        self.logdet_min = float(logdet_min)
 
         # Vis config
         self.enable_vis = enable_vis
@@ -453,8 +455,11 @@ class InvariantGaussianAttention(nn.Module):
         # Kernel (Gaussian log-likelihood up to an additive constant):
         #   log p(delta | Sigma) = -0.5 * d^T Sigma^{-1} d - 0.5 * log|Sigma| + const
         # Using the same robust implicit-Cholesky logic as our loss code.
-        dist_sq, log_det = compute_robust_nll_components(delta_mu, sigma_sum)
-        overlap_scores = -0.5 * dist_sq - 0.5 * log_det
+        dist_sq, log_det_raw = compute_robust_nll_components(delta_mu, sigma_sum)
+        # Prevent near-singular covariance volumes from turning -0.5*log|Sigma| into an
+        # unbounded positive reward, which can saturate softmax and destabilize training.
+        log_det_used = torch.clamp(log_det_raw, min=self.logdet_min)
+        overlap_scores = -0.5 * dist_sq - 0.5 * log_det_used
 
         # Aggregate across Gaussian points per head
         attn_bias_geo = overlap_scores.sum(dim=-1)
@@ -534,7 +539,8 @@ class InvariantGaussianAttention(nn.Module):
             # Dist / logdet summaries (use means over valid entries; these tensors are large so keep it light)
             # dist_sq/log_det: [B,H,N,N,P,3]?? -> after compute_robust_nll_components: [B,H,N,N,P,3]? actually [B,H,N,N,P,3] collapsed? compute returns [...,3]? No: it returns [B,H,N,N,P,3]? then summed? Here dist_sq/log_det are [B,H,N,N,P,3]? We'll reduce safely.
             ds = dist_sq.detach()
-            ld = log_det.detach()
+            # Track *raw* logdet so we can verify whether clamp is kicking in.
+            ld = log_det_raw.detach()
             # Reduce over last dims to get [B,H,N,N]
             while ds.dim() > 4:
                 ds = ds.mean(dim=-1)
