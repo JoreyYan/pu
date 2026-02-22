@@ -1100,6 +1100,21 @@ class FlowModelIGA(nn.Module):
                     edge_embed_out=self._model_conf.edge_embed_size,
                 )
 
+        # Optional sequence prediction head (aa_logits)
+        self.logits_head = None
+        if getattr(model_conf, 'enable_aa_head', False):
+            aa_head_cfg = getattr(model_conf, 'aa_head', None)
+            c_hidden = getattr(aa_head_cfg, 'c_hidden', self.ipa.c_s) if aa_head_cfg else self.ipa.c_s
+            num_layers = getattr(aa_head_cfg, 'num_layers', 3) if aa_head_cfg else 3
+            dropout = getattr(aa_head_cfg, 'dropout', 0.1) if aa_head_cfg else 0.1
+            self.logits_head = SequenceHead(
+                c_in=self.ipa.c_s,
+                c_hidden=c_hidden,
+                num_layers=num_layers,
+                dropout=dropout,
+                num_classes=20,
+            )
+
     def _make_rigids_nm(self, input_feats):
         # Prefer the interpolant-provided OffsetGaussianRigid so IGA geometry uses
         # the same ellipsoid params that were (optionally) corrupted.
@@ -1209,11 +1224,16 @@ class FlowModelIGA(nn.Module):
         scaling_log = rigids_ang._scaling_log
         scaling = torch.exp(scaling_log)
         alpha = rigids_ang._local_mean / (scaling + 1e-6)
-        return {
+
+        # Optional sequence head
+        aa_logits = self.logits_head(node_embed) if self.logits_head is not None else None
+
+        out = {
             'pred_trans': rigids_ang.get_trans(),
             'pred_rotmats': rigids_ang.get_rots().get_rot_mats(),
             'ellipsoid_alpha': alpha,
             'ellipsoid_scaling_log': scaling_log,
+            'node_embed': node_embed,
             'iga_debug': {
                 **iga_debug,
                 "global/geo_scaled_absmax": geo_scaled_absmax_global,
@@ -1221,3 +1241,6 @@ class FlowModelIGA(nn.Module):
                 "global/log_det_min": log_det_min_global,
             },
         }
+        if aa_logits is not None:
+            out['aa_logits'] = aa_logits
+        return out

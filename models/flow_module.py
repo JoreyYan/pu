@@ -150,6 +150,34 @@ class FlowModule(LightningModule):
         # Initialize IGA Loss
         # self.iga_loss_fn = BackboneGaussianAutoEncoderLoss()
 
+        # Ellipsoid-to-atom14 decoder (Phase 5C)
+        # Initialized but not used unless explicitly enabled via config
+        decoder_cfg = getattr(cfg.model, 'ellipsoid_decoder', None)
+        self.ellipsoid_decoder = None
+        self.ellipsoid_decoder_v2 = None
+        if decoder_cfg is not None and getattr(decoder_cfg, 'enable', False):
+            decoder_version = getattr(decoder_cfg, 'version', 1)
+            if decoder_version == 2:
+                from models.ellipsoid_decoder_v2 import EllipsoidDecoderV2
+                self.ellipsoid_decoder_v2 = EllipsoidDecoderV2(
+                    c_in=getattr(decoder_cfg, 'c_in', cfg.model.ipa.c_s),
+                    d_model=getattr(decoder_cfg, 'd_model', 256),
+                    num_shared_blocks=getattr(decoder_cfg, 'num_shared_blocks', 2),
+                    num_atom14_blocks=getattr(decoder_cfg, 'num_atom14_blocks', 2),
+                    aatype_embed_dim=getattr(decoder_cfg, 'aatype_embed_dim', 64),
+                    dropout=getattr(decoder_cfg, 'dropout', 0.0),
+                    out_range=getattr(decoder_cfg, 'out_range', 16.0),
+                )
+            else:
+                from models.ellipsoid_decoder import EllipsoidDecoder
+                self.ellipsoid_decoder = EllipsoidDecoder(
+                    aatype_embed_dim=getattr(decoder_cfg, 'aatype_embed_dim', 64),
+                    d_model=getattr(decoder_cfg, 'd_model', 256),
+                    num_blocks=getattr(decoder_cfg, 'num_blocks', 4),
+                    dropout=getattr(decoder_cfg, 'dropout', 0.0),
+                    out_range=getattr(decoder_cfg, 'out_range', 16.0),
+                )
+
 
 
     @property
@@ -420,11 +448,16 @@ class FlowModule(LightningModule):
                 aa_loss_per = F.cross_entropy(
                     aa_logits.transpose(1, 2),
                     aa_target,
+                    ignore_index=20,
                     reduction="none",
                 )
                 aa_loss = torch.sum(aa_loss_per * loss_mask, dim=-1) / (
                     torch.sum(loss_mask, dim=-1) + 1e-8
                 )
+                # t-gating: only compute aa loss when t > threshold (structure is meaningful)
+                aa_t_threshold = getattr(training_cfg, "aa_loss_t_threshold", 0.25)
+                t_gate = (r3_t[:, 0] > aa_t_threshold).float()  # [B]
+                aa_loss = aa_loss * t_gate
                 aa_recovery = type_top1_acc(aa_logits, aa_target, node_mask=loss_mask)
                 _, aa_perplexity = compute_CE_perplexity(aa_logits, aa_target, mask=loss_mask)
             else:
@@ -459,7 +492,8 @@ class FlowModule(LightningModule):
                 se3_vf_loss = se3_vf_loss + (alpha_pred.sum() + scaling_log_pred.sum()) * 0.0
         if torch.any(torch.isnan(se3_vf_loss)):
             raise ValueError('NaN loss encountered')
-        return {
+
+        result = {
             "trans_loss": trans_loss,
             "auxiliary_loss": auxiliary_loss,
             "rots_vf_loss": rots_vf_loss,
@@ -471,9 +505,136 @@ class FlowModule(LightningModule):
             "ellipsoid_scaling_loss": ellipsoid_scaling_loss,
         }
 
+        # --- Ellipsoid decoder loss (Phase 5C, Option B: two-stage) ---
+        # Only active when decoder is configured and GT atom14 is available.
+        if (self.ellipsoid_decoder is not None
+                and "atom14_gt_positions" in noisy_batch
+                and "ellipsoid_alpha" in model_output):
+            from models.ellipsoid_decoder import atom14_reconstruction_loss
+            alpha_pred = model_output["ellipsoid_alpha"]
+            scaling_log_pred = model_output["ellipsoid_scaling_log"]
+            scaling_pred = torch.exp(scaling_log_pred)
+            local_mean_for_dec = alpha_pred * scaling_pred
 
+            # Use GT ellipsoid params for two-stage training (Option B)
+            decoder_use_gt = getattr(training_cfg, "decoder_use_gt_ellipsoid", True)
+            if decoder_use_gt and "local_mean_1" in noisy_batch and "scaling_log_1" in noisy_batch:
+                dec_local_mean = noisy_batch["local_mean_1"]
+                dec_scaling_log = noisy_batch["scaling_log_1"]
+            else:
+                dec_local_mean = local_mean_for_dec
+                dec_scaling_log = scaling_log_pred
 
+            pred_atom14_local = self.ellipsoid_decoder(
+                dec_local_mean, dec_scaling_log, noisy_batch["aatype"]
+            )
 
+            gt_atom14_local = noisy_batch["atom14_gt_positions"]
+            # Transform GT to local frame if needed
+            if "rotmats_1" in noisy_batch and "trans_1" in noisy_batch:
+                gt_rigid = rigid_utils.Rigid(
+                    rigid_utils.Rotation(rot_mats=noisy_batch["rotmats_1"]),
+                    noisy_batch["trans_1"],
+                )
+                gt_atom14_local = gt_rigid[..., None].invert_apply(
+                    noisy_batch["atom14_gt_positions"]
+                )
+
+            atom14_mask = noisy_batch.get("atom14_gt_exists", torch.ones_like(
+                pred_atom14_local[..., 0]))
+            dec_loss = atom14_reconstruction_loss(
+                pred_atom14_local, gt_atom14_local, atom14_mask, loss_mask
+            )
+            dec_weight = getattr(training_cfg, "decoder_loss_weight", 1.0)
+            result["decoder_atom14_loss"] = dec_loss
+            result["se3_vf_loss"] = result["se3_vf_loss"] + dec_weight * dec_loss
+
+        # --- EllipsoidDecoderV2 loss (two-head: aatype + atom14) ---
+        if (self.ellipsoid_decoder_v2 is not None
+                and "atom14_gt_positions" in noisy_batch
+                and "node_embed" in model_output):
+            from models.ellipsoid_decoder import atom14_reconstruction_loss
+
+            node_embed_for_dec = model_output["node_embed"]
+            # Optionally detach node_embed to prevent decoder loss from affecting trunk
+            if getattr(training_cfg, "decoder_detach_node_embed", True):
+                node_embed_for_dec = node_embed_for_dec.detach()
+
+            alpha_pred = model_output["ellipsoid_alpha"]
+            scaling_log_pred = model_output["ellipsoid_scaling_log"]
+            scaling_pred = torch.exp(scaling_log_pred)
+            local_mean_for_dec = alpha_pred * scaling_pred
+
+            # Use GT or predicted ellipsoid params
+            decoder_use_gt = getattr(training_cfg, "decoder_use_gt_ellipsoid", True)
+            if decoder_use_gt and "local_mean_1" in noisy_batch and "scaling_log_1" in noisy_batch:
+                dec_local_mean = noisy_batch["local_mean_1"]
+                dec_scaling_log = noisy_batch["scaling_log_1"]
+            else:
+                dec_local_mean = local_mean_for_dec
+                dec_scaling_log = scaling_log_pred
+
+            # V2 decoder forward (teacher forcing with GT aatype during training)
+            dec_out = self.ellipsoid_decoder_v2(
+                node_embed_for_dec, dec_scaling_log, dec_local_mean,
+                aatype=noisy_batch.get("aatype"),
+            )
+            dec_aa_logits = dec_out['aa_logits']
+            dec_atom14_local = dec_out['atom14_local']
+
+            # GT atom14 in local frame
+            gt_atom14_local = noisy_batch["atom14_gt_positions"]
+            if "rotmats_1" in noisy_batch and "trans_1" in noisy_batch:
+                gt_rigid = rigid_utils.Rigid(
+                    rigid_utils.Rotation(rot_mats=noisy_batch["rotmats_1"]),
+                    noisy_batch["trans_1"],
+                )
+                gt_atom14_local = gt_rigid[..., None].invert_apply(
+                    noisy_batch["atom14_gt_positions"]
+                )
+
+            atom14_mask = noisy_batch.get("atom14_gt_exists", torch.ones_like(
+                dec_atom14_local[..., 0]))
+
+            # Decoder AA loss (with t-gating)
+            dec_aa_loss = None
+            dec_aa_recovery = None
+            if "aatype" in noisy_batch:
+                aa_target = noisy_batch["aatype"].long()
+                dec_aa_loss_per = F.cross_entropy(
+                    dec_aa_logits.transpose(1, 2), aa_target,
+                    ignore_index=20, reduction="none",
+                )
+                dec_aa_loss = torch.sum(dec_aa_loss_per * loss_mask, dim=-1) / (
+                    torch.sum(loss_mask, dim=-1) + 1e-8
+                )
+                # t-gate decoder aa loss
+                aa_t_threshold = getattr(training_cfg, "aa_loss_t_threshold", 0.25)
+                t_gate_aa = (r3_t[:, 0] > aa_t_threshold).float()
+                dec_aa_loss = dec_aa_loss * t_gate_aa
+                dec_aa_recovery = type_top1_acc(dec_aa_logits, aa_target, node_mask=loss_mask)
+
+            # Decoder atom14 loss (with higher t-threshold)
+            dec_atom14_t_threshold = getattr(training_cfg, "decoder_atom14_t_threshold", 0.5)
+            t_gate_atom14 = (r3_t[:, 0] > dec_atom14_t_threshold).float()
+            dec_atom14_loss = atom14_reconstruction_loss(
+                dec_atom14_local, gt_atom14_local, atom14_mask, loss_mask
+            )
+            dec_atom14_loss = dec_atom14_loss * t_gate_atom14
+
+            # Accumulate into result
+            dec_aa_weight = getattr(training_cfg, "decoder_aa_loss_weight", 0.5)
+            dec_weight = getattr(training_cfg, "decoder_loss_weight", 1.0)
+            result["decoder_v2_aa_loss"] = dec_aa_loss
+            result["decoder_v2_aa_recovery"] = dec_aa_recovery
+            result["decoder_v2_atom14_loss"] = dec_atom14_loss
+            if dec_aa_loss is not None:
+                result["se3_vf_loss"] = result["se3_vf_loss"] + dec_aa_weight * dec_aa_loss
+            result["se3_vf_loss"] = result["se3_vf_loss"] + dec_weight * dec_atom14_loss
+            # Keep decoder params in graph even when t-gated to zero
+            result["se3_vf_loss"] = result["se3_vf_loss"] + dec_aa_logits.sum() * 0.0 + dec_atom14_local.sum() * 0.0
+
+        return result
 
     def validation_step(self, batch: Any, batch_idx: int):
         res_mask = batch['res_mask']
@@ -714,8 +875,34 @@ class FlowModule(LightningModule):
             rank_zero_only=rank_zero_only
         )
 
+    def _compute_gt_prob(self):
+        """Curriculum schedule: linearly decay GT geometry probability."""
+        curriculum_cfg = getattr(self._model_cfg, 'curriculum', None)
+        if curriculum_cfg is None or not getattr(curriculum_cfg, 'enable', False):
+            return self.model.iga_geo_attn_gt_prob
+        step = self.global_step
+        warmup = int(curriculum_cfg.warmup_steps)
+        decay_end = int(curriculum_cfg.decay_steps)
+        start_prob = float(curriculum_cfg.gt_prob_start)
+        end_prob = float(curriculum_cfg.gt_prob_end)
+        if step < warmup:
+            return start_prob
+        elif step < decay_end:
+            progress = (step - warmup) / (decay_end - warmup)
+            return start_prob + (end_prob - start_prob) * progress
+        else:
+            return end_prob
+
     def training_step(self, batch: Any, stage: int):
         step_start_time = time.time()
+
+        # Curriculum: update GT geometry probability for IGA attention
+        if self.model.iga_geo_attn_mode == "mix":
+            gt_prob = self._compute_gt_prob()
+            self.model.iga_geo_attn_gt_prob = gt_prob
+            if self.global_step % 100 == 0:
+                self._log_scalar("train/gt_geo_prob", gt_prob, prog_bar=False)
+
         self.interpolant.set_device(batch['res_mask'].device)
         noisy_batch = self.interpolant.corrupt_batch(batch)
         if self._interpolant_cfg.self_condition and random.random() > 0.5:
@@ -785,8 +972,13 @@ class FlowModule(LightningModule):
         return train_loss
 
     def configure_optimizers(self):
+        params = list(self.model.parameters())
+        if self.ellipsoid_decoder is not None:
+            params += list(self.ellipsoid_decoder.parameters())
+        if self.ellipsoid_decoder_v2 is not None:
+            params += list(self.ellipsoid_decoder_v2.parameters())
         return torch.optim.AdamW(
-            params=self.model.parameters(),
+            params=params,
             **self._exp_cfg.optimizer
         )
     # def configure_optimizers(self):
@@ -891,7 +1083,256 @@ class FlowModule(LightningModule):
             'diagnostics': diagnostics,
         }
 
+    @torch.no_grad()
+    def sample_12d(
+        self,
+        num_batch: int,
+        num_res: int,
+        num_timesteps: int | None = None,
+        chain_idx: torch.Tensor | None = None,
+        res_idx: torch.Tensor | None = None,
+        verbose: bool = False,
+    ):
+        """Run 12D ODE sampling: jointly generate backbone + ellipsoid params.
+
+        Returns:
+            dict with keys:
+                atom37_traj: backbone trajectory
+                ellipsoid_traj: list of (scaling_log, local_mean) tuples
+                final_trans: [B, N, 3] final CA positions
+                final_rotmats: [B, N, 3, 3] final backbone rotations
+                final_scaling_log: [B, N, 3] final ellipsoid log-scales
+                final_local_mean: [B, N, 3] final ellipsoid offsets
+        """
+        device = next(self.model.parameters()).device
+        self.interpolant.set_device(device)
+
+        atom37_traj, clean_atom37_traj, clean_traj, ellipsoid_traj, last_model_out = \
+            self.interpolant.sample_12d(
+                num_batch,
+                num_res,
+                self.model,
+                num_timesteps=num_timesteps,
+                chain_idx=chain_idx,
+                res_idx=res_idx,
+                verbose=verbose,
+            )
+
+        # Extract final state
+        final_trans, final_rotmats = clean_traj[-1]
+        final_scaling_log, final_local_mean = ellipsoid_traj[-1]
+
+        result = {
+            'atom37_traj': atom37_traj,
+            'clean_atom37_traj': clean_atom37_traj,
+            'ellipsoid_traj': ellipsoid_traj,
+            'final_trans': final_trans,
+            'final_rotmats': final_rotmats,
+            'final_scaling_log': final_scaling_log,
+            'final_local_mean': final_local_mean,
+        }
+
+        # Propagate last model output (aa_logits, node_embed) if available
+        if last_model_out is not None:
+            if 'aa_logits' in last_model_out:
+                result['aa_logits'] = last_model_out['aa_logits'].detach()
+            if 'node_embed' in last_model_out:
+                result['node_embed'] = last_model_out['node_embed'].detach()
+
+        return result
+
+    def predict_step_12d(self, batch, batch_idx):
+        """End-to-end 12D generation: noise -> backbone + ellipsoid -> decoder -> atom14 -> PDB.
+
+        Pipeline:
+            1. 12D ODE sampling (backbone + ellipsoid)
+            2. Ellipsoid decoder -> atom14 local coordinates
+            3. Transform to global frame
+            4. Write PDB
+        """
+        sample_root = self._get_inference_run_dir()
+        os.makedirs(sample_root, exist_ok=True)
+
+        res_mask = batch['res_mask']
+        num_batch, num_res = res_mask.shape
+        device = res_mask.device
+
+        # Step 1: 12D ODE sampling
+        num_timesteps = getattr(self._interpolant_cfg.sampling, 'num_timesteps', 100)
+        sample_result = self.sample_12d(
+            num_batch=num_batch,
+            num_res=num_res,
+            num_timesteps=num_timesteps,
+            chain_idx=batch.get('chain_idx'),
+            res_idx=batch.get('res_idx'),
+            verbose=True,
+        )
+
+        final_trans = sample_result['final_trans'].to(device)
+        final_rotmats = sample_result['final_rotmats'].to(device)
+        final_scaling_log = sample_result['final_scaling_log'].to(device)
+        final_local_mean = sample_result['final_local_mean'].to(device)
+
+        # Step 2: Decode ellipsoid -> atom14 (if decoder available)
+        atom14_local = None
+        atom14_global = None
+        predicted_aatype = None
+
+        if self.ellipsoid_decoder_v2 is not None:
+            # V2 decoder: uses node_embed + ellipsoid to predict aatype and atom14
+            node_embed = sample_result.get('node_embed')
+            if node_embed is not None:
+                node_embed = node_embed.to(device)
+                dec_out = self.ellipsoid_decoder_v2(
+                    node_embed, final_scaling_log, final_local_mean,
+                    aatype=None,  # inference: predict aatype
+                )
+                atom14_local = dec_out['atom14_local']
+                predicted_aatype = dec_out['aa_logits'].argmax(dim=-1)
+            else:
+                self._print_logger.warning(
+                    "V2 decoder requires node_embed but sample_12d did not return it"
+                )
+        elif self.ellipsoid_decoder is not None:
+            # V1 decoder: requires aatype as input
+            aatype = batch.get('aatype', torch.zeros(
+                num_batch, num_res, dtype=torch.long, device=device))
+            atom14_local = self.ellipsoid_decoder(
+                final_local_mean, final_scaling_log, aatype
+            )  # [B, N, 14, 3]
+
+        # Also get aatype from trunk aa_logits if available
+        if predicted_aatype is None and 'aa_logits' in sample_result:
+            predicted_aatype = sample_result['aa_logits'].to(device).argmax(dim=-1)
+
+        if atom14_local is not None:
+            # Transform to global frame
+            final_rigid = rigid_utils.Rigid(
+                rigid_utils.Rotation(rot_mats=final_rotmats),
+                final_trans,
+            )
+            atom14_global = final_rigid[..., None].apply(atom14_local)
+
+        # Step 3: Write outputs
+        atom37_traj = sample_result['atom37_traj']
+        backbone_samples = atom37_traj[-1].numpy()
+
+        # Get ellipsoid as OffsetGaussianRigid for PDB export
+        from data.GaussianRigid import OffsetGaussianRigid, save_gaussian_as_pdb
+
+        final_rigid_ell = OffsetGaussianRigid(
+            rigid_utils.Rotation(rot_mats=final_rotmats),
+            final_trans,
+            final_scaling_log,
+            final_local_mean,
+        )
+
+        sample_ids = batch.get('csv_idx')
+        if sample_ids is None:
+            sample_ids = torch.arange(num_batch)
+        sample_ids = sample_ids.squeeze().tolist()
+        if isinstance(sample_ids, int):
+            sample_ids = [sample_ids]
+
+        idx_to_resname = {
+            i: residue_constants.restype_1to3.get(aa, 'UNK')
+            for aa, i in residue_constants.restype_order.items()
+        }
+
+        predictions = []
+        for b, sid in enumerate(sample_ids):
+            tag = f"{sid:06d}" if isinstance(sid, int) else str(sid)
+            sample_dir = os.path.join(sample_root, f'sample_12d_{tag}')
+            os.makedirs(sample_dir, exist_ok=True)
+
+            mask = res_mask[b].bool().cpu()
+
+            # Backbone PDB
+            backbone_pos = backbone_samples[b]
+            bb_path = au.write_prot_to_pdb(
+                backbone_pos,
+                os.path.join(sample_dir, 'backbone.pdb'),
+                no_indexing=True,
+            )
+
+            # Determine aatype for this sample: prefer predicted, fallback to GT
+            if predicted_aatype is not None:
+                aatype_b = predicted_aatype[b].cpu()
+            else:
+                aatype_b = batch.get('aatype', torch.zeros(num_batch, num_res, dtype=torch.long))[b]
+
+            # Ellipsoid PDB with ANISOU
+            res_names_b = [
+                idx_to_resname.get(int(aatype_b[j].item()), 'UNK')
+                for j in range(num_res)
+                if mask[j]
+            ]
+            save_gaussian_as_pdb(
+                final_rigid_ell,
+                os.path.join(sample_dir, 'ellipsoids.pdb'),
+                res_names=res_names_b,
+                mask=res_mask[b:b+1],
+            )
+
+            # Full-atom PDB (if decoder available)
+            if atom14_global is not None:
+                self._write_atom14_pdb(
+                    atom14_global[b],
+                    aatype_b,
+                    mask,
+                    os.path.join(sample_dir, 'full_atom.pdb'),
+                )
+
+            predictions.append({
+                'sample_dir': sample_dir,
+                'backbone_path': bb_path,
+            })
+
+            self._print_logger.info(
+                f"[12D] Sample {tag}: saved to {sample_dir}"
+            )
+
+        return predictions
+
+    def _write_atom14_pdb(self, atom14_pos, aatype, mask, output_path):
+        """Write atom14 positions to PDB file."""
+        idx_to_resname = {
+            i: residue_constants.restype_1to3.get(aa, 'UNK')
+            for aa, i in residue_constants.restype_order.items()
+        }
+        with open(output_path, 'w') as f:
+            f.write("HEADER    12D_GENERATED_FULL_ATOM\n")
+            serial = 1
+            for res_i in range(atom14_pos.shape[0]):
+                if not mask[res_i]:
+                    continue
+                aa_idx = int(aatype[res_i].item())
+                resname = idx_to_resname.get(aa_idx, 'UNK')
+                res_seq = res_i + 1
+
+                atom_names = residue_constants.restype_name_to_atom14_names.get(
+                    resname, [''] * 14
+                )
+                for atom_j in range(14):
+                    if atom_j < len(atom_names) and atom_names[atom_j]:
+                        x, y, z = atom14_pos[res_i, atom_j].detach().cpu().numpy()
+                        name = atom_names[atom_j]
+                        if len(name) < 4:
+                            name_str = f" {name:<3s}"
+                        else:
+                            name_str = f"{name:4s}"
+                        f.write(
+                            f"ATOM  {serial:5d} {name_str} {resname:>3s} A{res_seq:4d}    "
+                            f"{x:8.3f}{y:8.3f}{z:8.3f}"
+                            f"  1.00  0.00           C  \n"
+                        )
+                        serial += 1
+            f.write("END\n")
+
     def predict_step(self, batch, batch_idx):
+        # Route to 12D pipeline if task is configured for it
+        if getattr(self._exp_cfg, 'task', '') == 'hallucination_12d':
+            return self.predict_step_12d(batch, batch_idx)
         if self._exp_cfg.task == 'shdiffusion':
             return self.predict_step_shdiffusion(batch, batch_idx)
         # del batch_idx  # lightning signature

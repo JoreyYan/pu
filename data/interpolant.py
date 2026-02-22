@@ -465,6 +465,13 @@ class Interpolant:
         noisy_batch['res_idx']=batch['res_idx']
         noisy_batch['chain_idx'] = batch['chain_idx']
         noisy_batch['aatype']=batch['aatype']
+
+        # Pass through atom14 GT for decoder loss computation
+        if 'atom14_gt_positions' in batch:
+            noisy_batch['atom14_gt_positions'] = batch['atom14_gt_positions']
+        if 'atom14_gt_exists' in batch:
+            noisy_batch['atom14_gt_exists'] = batch['atom14_gt_exists']
+
         return noisy_batch
 
     def corrupt_batch_ssq(self, batch):
@@ -1419,6 +1426,179 @@ class Interpolant:
         atom37_traj = all_atom.transrot_to_atom37(prot_traj, res_mask)
         clean_atom37_traj = all_atom.transrot_to_atom37(clean_traj, res_mask)
         return atom37_traj, clean_atom37_traj, clean_traj
+
+    @torch.no_grad()
+    def sample_12d(
+            self,
+            num_batch,
+            num_res,
+            model,
+            num_timesteps=None,
+            trans_0=None,
+            rotmats_0=None,
+            scaling_log_0=None,
+            local_mean_0=None,
+            diffuse_mask=None,
+            chain_idx=None,
+            res_idx=None,
+            verbose=False,
+    ):
+        """12D ODE sampling: jointly denoise backbone (trans, rotmats) and
+        ellipsoid params (scaling_log, local_mean).
+
+        Returns:
+            atom37_traj: list of atom37 tensors along trajectory
+            clean_atom37_traj: model predictions at each step
+            clean_traj: list of (trans, rotmats) tuples
+            ellipsoid_traj: list of (scaling_log, local_mean) tuples
+        """
+        res_mask = torch.ones(num_batch, num_res, device=self._device)
+
+        # Initialize prior samples
+        if trans_0 is None:
+            trans_0 = _centered_gaussian(
+                num_batch, num_res, self._device) * du.NM_TO_ANG_SCALE
+        if rotmats_0 is None:
+            rotmats_0 = _uniform_so3(num_batch, num_res, self._device)
+        if scaling_log_0 is None:
+            # Random scaling_log ~ N(0, 1), centered around log(base_thickness)
+            scaling_log_0 = torch.randn(
+                num_batch, num_res, 3, device=self._device)
+        if local_mean_0 is None:
+            # Random local_mean ~ N(0, 1)
+            local_mean_0 = torch.randn(
+                num_batch, num_res, 3, device=self._device)
+        if res_idx is None:
+            res_idx = torch.arange(
+                num_res, device=self._device,
+                dtype=torch.float32)[None].repeat(num_batch, 1)
+
+        batch = {
+            'res_mask': res_mask,
+            'diffuse_mask': diffuse_mask if diffuse_mask is not None else res_mask,
+            'res_idx': res_idx,
+            'chain_idx': chain_idx,
+        }
+
+        # Time schedule
+        if num_timesteps is None:
+            num_timesteps = self._sample_cfg.num_timesteps
+        ts = torch.linspace(self._cfg.min_t, 1.0, num_timesteps)
+        t_1 = ts[0]
+
+        prot_traj = [(trans_0, rotmats_0)]
+        ellipsoid_traj = [(scaling_log_0.clone(), local_mean_0.clone())]
+        clean_traj = []
+
+        # Current ellipsoid state
+        scaling_log_t = scaling_log_0
+        local_mean_t = local_mean_0
+
+        for i, t_2 in enumerate(ts[1:]):
+            if verbose:
+                print(f'{i=}, t={t_1.item():.2f}')
+
+            trans_t_1, rotmats_t_1 = prot_traj[-1]
+            d_t = t_2 - t_1
+
+            # Construct batch with current state
+            if self._trans_cfg.corrupt:
+                batch['trans_t'] = trans_t_1
+            if self._rots_cfg.corrupt:
+                batch['rotmats_t'] = rotmats_t_1
+            batch['t'] = torch.ones((num_batch, 1), device=self._device) * t_1
+            batch['so3_t'] = batch['t']
+            batch['r3_t'] = batch['t']
+
+            # Build OffsetGaussianRigid for the current state so IGA
+            # attention can use the (evolving) ellipsoid geometry.
+            rigids_t = OffsetGaussianRigid(
+                ru.Rotation(rot_mats=rotmats_t_1),
+                trans_t_1,
+                scaling_log_t,
+                local_mean_t,
+            )
+            batch['rigids_t'] = rigids_t
+
+            # Model forward
+            model_out = model(batch)
+
+            pred_trans_1 = model_out['pred_trans']
+            pred_rotmats_1 = model_out['pred_rotmats']
+            pred_alpha = model_out['ellipsoid_alpha']
+            pred_scaling_log = model_out['ellipsoid_scaling_log']
+            pred_scaling = torch.exp(pred_scaling_log)
+            pred_local_mean = pred_alpha * pred_scaling
+
+            clean_traj.append(
+                (pred_trans_1.detach().cpu(), pred_rotmats_1.detach().cpu())
+            )
+
+            # Self-conditioning
+            if self._cfg.self_condition:
+                batch['trans_sc'] = pred_trans_1
+
+            # Euler steps for backbone
+            trans_t_2 = self._trans_euler_step(
+                d_t, t_1, pred_trans_1, trans_t_1)
+            rotmats_t_2 = self._rots_euler_step(
+                d_t, t_1, pred_rotmats_1, rotmats_t_1)
+
+            # Euler steps for ellipsoid params (same linear interpolation)
+            # scaling_log: move toward predicted clean value
+            sl_vf = (pred_scaling_log - scaling_log_t) / (1 - t_1)
+            scaling_log_t_2 = scaling_log_t + sl_vf * d_t
+
+            # local_mean: move toward predicted clean value
+            lm_vf = (pred_local_mean - local_mean_t) / (1 - t_1)
+            local_mean_t_2 = local_mean_t + lm_vf * d_t
+
+            prot_traj.append((trans_t_2, rotmats_t_2))
+            ellipsoid_traj.append(
+                (scaling_log_t_2.detach().clone(),
+                 local_mean_t_2.detach().clone()))
+
+            scaling_log_t = scaling_log_t_2
+            local_mean_t = local_mean_t_2
+            t_1 = t_2
+
+        # Final step at t=1
+        t_1 = ts[-1]
+        trans_t_1, rotmats_t_1 = prot_traj[-1]
+        if self._trans_cfg.corrupt:
+            batch['trans_t'] = trans_t_1
+        if self._rots_cfg.corrupt:
+            batch['rotmats_t'] = rotmats_t_1
+        batch['t'] = torch.ones((num_batch, 1), device=self._device) * t_1
+
+        rigids_t = OffsetGaussianRigid(
+            ru.Rotation(rot_mats=rotmats_t_1),
+            trans_t_1,
+            scaling_log_t,
+            local_mean_t,
+        )
+        batch['rigids_t'] = rigids_t
+
+        model_out = model(batch)
+        pred_trans_1 = model_out['pred_trans']
+        pred_rotmats_1 = model_out['pred_rotmats']
+        pred_alpha = model_out['ellipsoid_alpha']
+        pred_scaling_log = model_out['ellipsoid_scaling_log']
+        pred_scaling = torch.exp(pred_scaling_log)
+        pred_local_mean = pred_alpha * pred_scaling
+
+        clean_traj.append(
+            (pred_trans_1.detach().cpu(), pred_rotmats_1.detach().cpu())
+        )
+        prot_traj.append((pred_trans_1, pred_rotmats_1))
+        ellipsoid_traj.append(
+            (pred_scaling_log.detach().clone(),
+             pred_local_mean.detach().clone()))
+
+        # Convert trajectories to atom37
+        atom37_traj = all_atom.transrot_to_atom37(prot_traj, res_mask)
+        clean_atom37_traj = all_atom.transrot_to_atom37(clean_traj, res_mask)
+        return atom37_traj, clean_atom37_traj, clean_traj, ellipsoid_traj, model_out
 
     @torch.no_grad()
     def sample_ssq(

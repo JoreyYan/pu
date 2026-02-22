@@ -1,7 +1,7 @@
 defaults:
-  - _self_
   - datasets
   - model
+  - _self_
 
 data:
 
@@ -61,7 +61,7 @@ experiment:
   debug: False
   seed: 123
   num_devices: 2
-  warm_start: null
+  warm_start: ckpt/se3-fm/hallucination_pdb_IGAattn_GaussUpdate_12D_Gnoise_gtGeoAttn_logdetClamp20_sigmaMin03nm_scaleP_geoInitM4/2026-02-21_22-14-58/last.ckpt
   warm_start_cfg_override: True
   training:
     mask_plddt: True
@@ -76,23 +76,30 @@ experiment:
     aux_loss_t_pass: 0.5
     ellipsoid_local_mean_loss_weight: 1.0
     ellipsoid_scaling_loss_weight: 1.0
+    # Amino acid prediction loss
+    aa_loss_weight: 1.0
+    aa_loss_t_threshold: 0.25         # t-gate: only compute aa loss when t > threshold
+    # EllipsoidDecoderV2 loss weights
+    decoder_loss_weight: 1.0          # atom14 reconstruction weight
+    decoder_aa_loss_weight: 0.5       # decoder's own aa prediction weight
+    decoder_use_gt_ellipsoid: true    # use GT ellipsoid params for decoder input
+    decoder_atom14_t_threshold: 0.5   # higher threshold for atom14 (needs accurate backbone)
+    decoder_detach_node_embed: true   # detach node_embed to prevent decoder affecting trunk
     # IGA debug logging (only active when the model returns `iga_debug`, i.e. FlowModelIGA backbone-only path).
     # Set to 1 to log layer-level stats every step (more overhead), or a larger number to reduce logging volume.
     iga_debug_interval: 10
   wandb:
     # For IPA-vs-IGA debugging, encode the backbone here so runs are comparable in W&B.
     # Current code path: FlowModelIGA uses IGA attention + IPA BackboneUpdate (no GaussianUpdateBlock).
-    name: ${data.task}_${data.dataset}_IGAattn_GaussUpdate_12D_Gnoise_gtGeoAttn_logdetClamp20_sigmaMin03nm_scaleP_geoInitM4
+    name: ${data.task}_${data.dataset}_IGAattn_GaussUpdate_12D_Gnoise_curriculum_logdetClamp20_sigmaMin03nm_scaleP_geoInitM4
     project: se3-fm
     notes: >
-      12D run with GT ellipsoid geometry for IGA attention. Corrupted ellipsoid params are
-      denoised by GaussianUpdateBlock but IGA attention uses clean GT geometry for stable
-      Gaussian overlap. Previous 12D run showed loss regression because corrupted local_mean
-      and scaling_log at low t produced meaningless Gaussian overlap distances in attention.
-      This fix decouples: iga_rigids_nm (GT ellipsoid + updated backbone) for attention,
-      rigids_nm (corrupted ellipsoid) for the update/denoising block.
-      Config: gaussian_params.corrupt=true, local_mean + scaling_log loss enabled.
-      IGA stability: logdet_min=-20, sigma_min_nm=0.03, 1/sqrt(P) scaling, geo_scale init=-4.0.
+      Curriculum training: warm-start from epoch-15 gtGeoAttn checkpoint.
+      iga_geo_attn_mode=mix with gt_prob schedule: 1.0 (0-2k) → linear decay → 0.0 (8k+).
+      Gradually removes GT ellipsoid geometry from IGA attention to bridge train-inference gap.
+      Step 2 gap test showed 2.38x trans degradation without GT — curriculum should close this.
+      Base config unchanged: gaussian_params.corrupt=true, 12D flow matching,
+      logdet_min=-20, sigma_min_nm=0.03, 1/sqrt(P) scaling, geo_scale init=-4.0.
   optimizer:
     lr: 0.0001
   trainer:
@@ -119,4 +126,27 @@ experiment:
   inference_dir: null
 
 model:
-  iga_geo_attn_mode: gt
+  # Sequence prediction head on trunk output
+  enable_aa_head: true
+  aa_head:
+    c_hidden: 256
+    num_layers: 3
+    dropout: 0.1
+  # EllipsoidDecoderV2: two-head (aatype + atom14) from node_embed + ellipsoid
+  ellipsoid_decoder:
+    enable: true
+    version: 2
+    c_in: 256               # must match model.ipa.c_s
+    d_model: 256
+    num_shared_blocks: 2
+    num_atom14_blocks: 2
+    aatype_embed_dim: 64
+    dropout: 0.0
+    out_range: 16.0
+  iga_geo_attn_mode: mix
+  curriculum:
+    enable: true
+    gt_prob_start: 1.0
+    gt_prob_end: 0.0
+    warmup_steps: 2000      # gt_prob=1.0 for first 2k steps
+    decay_steps: 8000        # linear decay to gt_prob_end by step 8k
